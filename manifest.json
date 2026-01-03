@@ -1,0 +1,57 @@
+{
+  "action": {
+    "default_icon": {
+      "128": "images/logo.png",
+      "16": "images/logo.png",
+      "48": "images/logo.png"
+    },
+    "default_title": "Facebook Post Downloader"
+  },
+  "background": {
+    "service_worker": "extensions/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": ["extensions/content-script.js"],
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://web.facebook.com/*",
+        "https://m.facebook.com/*"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "description": "Download Facebook posts, including text, images, and videos.",
+  "icons": {
+    "128": "images/logo.png",
+    "16": "images/logo.png",
+    "48": "images/logo.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxvKaPB3kLkWOFVMoTKhkW/9x5VPrnidB6qUl5U0DU2yBrFjhY0aCxptzJnwI+oBAe1G0+py6rQSNB6rU7sFMfjnL6uxodwDguAiVs1ONchhxWaKErtlzcU8u28i8DmEi8GXKLOI8lSlNP6VxtkyyPayNyWm6D367qYcs6rvx17SEWW6D1Pzse/MVWlLYCtJknsUNnOtmUjXcZJ9+4kjS2KO9Jh3e28GPE2fj8rOCV6SR8vehRpU8aAKIftb9pHx7cuYF0oLekQFgrJYXSP87AEFo+1cnqwyLETJvC6JoRIVYqFN+Qe1foG6jlaAq9eYy0AMgO9fsFjBh8QbtEpKf0wIDAQAB",
+  "manifest_version": 3,
+  "name": "Facebook Post Downloader",
+  "permissions": ["downloads"],
+  "update_url": "https://clients2.google.com/service/update2/crx",
+  "version": "0.1.3",
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://web.facebook.com/*",
+        "https://m.facebook.com/*"
+      ],
+      "resources": [
+        "extensions/app.js",
+        "extensions/download-button.js",
+        "extensions/graphql.js",
+        "extensions/react.js",
+        "extensions/story.js",
+        "node_modules/umd-react/dist/react-dom.production.min.js",
+        "node_modules/umd-react/dist/react.production.min.js"
+      ]
+    }
+  ]
+}
