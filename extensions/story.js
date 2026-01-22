@@ -28,6 +28,9 @@ const storyGroupCache = new Map();
 /** @type {Map<string, string>} */
 const videoUrlCache = new Map();
 
+/** @type {Map<string, Story>} */
+const globalStoriesCache = new Map();
+
 /**
  * Check if an object is a MediaPhoto.
  * @param {unknown} obj
@@ -77,6 +80,42 @@ function isMediaWatch(obj) {
  * @returns {{ url: string, ext: string } | undefined}
  */
 function getDownloadUrl(media) {
+  const m = /** @type {any} */ (media);
+
+  // Instagram Post/Reel Video
+  if (m.video_url) {
+    return { url: m.video_url, ext: "mp4" };
+  }
+
+  if (
+    m.video_versions &&
+    Array.isArray(m.video_versions) &&
+    m.video_versions.length > 0
+  ) {
+    const best = m.video_versions.sort(
+      (a, b) => b.width * b.height - a.width * a.height,
+    )[0];
+    return { url: best.url, ext: "mp4" };
+  }
+
+  // Instagram Image
+  if (m.display_url) {
+    const url = m.display_url;
+    let ext = "jpg";
+    if (url.includes(".png") || url.includes("format=png")) ext = "png";
+    return { url, ext };
+  }
+
+  if (
+    m.image_versions2?.candidates &&
+    Array.isArray(m.image_versions2.candidates)
+  ) {
+    const best = m.image_versions2.candidates.sort(
+      (a, b) => b.width * b.height - a.width * a.height,
+    )[0];
+    return { url: best.url, ext: "jpg" };
+  }
+
   if (isMediaPhoto(media)) {
     // Pick the best image by comparing dimensions (width * height)
     /** @type {MediaPhotoUrl | undefined} */
@@ -119,7 +158,7 @@ function getDownloadUrl(media) {
 
     if (Array.isArray(list) && list.length > 0) {
       const hd = list.find(
-        (x) => x?.metadata?.quality === "HD" && x?.progressive_url
+        (x) => x?.metadata?.quality === "HD" && x?.progressive_url,
       );
       if (hd?.progressive_url) return { url: hd.progressive_url, ext: "mp4" };
 
@@ -143,6 +182,14 @@ function getDownloadUrl(media) {
  * @returns {number}
  */
 export function getAttachmentCount(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    // Carousel
+    if (s.edge_sidecar_to_children?.edges) {
+      return s.edge_sidecar_to_children.edges.length;
+    }
+    return 1;
+  }
   if (isStoryPost(story)) {
     const attachment = story.attachments[0]?.styles.attachment;
     if (!attachment) return 0;
@@ -237,6 +284,217 @@ async function fetchMediaNav(currentId, mediasetToken) {
  * @yields {Media}
  */
 async function* fetchAttachments(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+
+    // Handle Instagram placeholder (fetch on download)
+    if (s.placeholder && s.shortcode) {
+      try {
+        // Try to extract from page DOM first
+        const articles = document.querySelectorAll("article");
+        for (const article of articles) {
+          const link = article.querySelector(
+            'a[href*="/p/"], a[href*="/reels/"], a[href*="/reel/"]',
+          );
+          if (link) {
+            const href = link.getAttribute("href") || "";
+            const match = href.match(/\/(?:p|reels|reel)\/([A-Za-z0-9_-]+)/);
+            if (match && match[1] === s.shortcode) {
+              const media = [];
+              const imgs = article.querySelectorAll("img");
+              for (const img of imgs) {
+                const src =
+                  img.src ||
+                  img.getAttribute("data-src") ||
+                  img.getAttribute("data-lazy-src") ||
+                  img.currentSrc;
+                if (
+                  src &&
+                  src.includes("cdninstagram.com") &&
+                  !src.includes("profile") &&
+                  !src.includes("s150x150") &&
+                  !src.includes("s320x320") &&
+                  !src.includes("s640x640")
+                ) {
+                  media.push({ __typename: "Photo", display_url: src });
+                }
+              }
+              const videos = article.querySelectorAll("video");
+              for (const video of videos) {
+                const sources = video.querySelectorAll("source");
+                for (const source of sources) {
+                  const src =
+                    source.src ||
+                    source.getAttribute("data-src") ||
+                    source.dataset.src;
+                  if (src && src.includes("cdninstagram.com")) {
+                    media.push({ __typename: "Video", video_url: src });
+                  }
+                }
+                if (!sources.length) {
+                  const src =
+                    video.src ||
+                    video.getAttribute("data-video-src") ||
+                    video.dataset.videoSrc;
+                  if (src && src.includes("cdninstagram.com")) {
+                    media.push({ __typename: "Video", video_url: src });
+                  }
+                }
+              }
+              if (media.length > 0) {
+                for (const m of media) {
+                  yield m;
+                }
+                return;
+              }
+            }
+          }
+        }
+
+        // 1. Try to find in cache or embedded data first
+        // Check our global cache of intercepted stories
+        const cached = globalStoriesCache.get(s.shortcode);
+        if (cached && !cached.placeholder) {
+          console.log(
+            `[fpdl] Resolved placeholder ${s.shortcode} from global cache`,
+          );
+          yield* fetchAttachments(cached);
+          return;
+        }
+
+        // We also do a fresh extraction here to catch anything new from scrolling
+        const embedded = extractEmbeddedStories();
+        const found = embedded.find(
+          (story) =>
+            getStoryPostId(story) === s.shortcode && !story.placeholder,
+        );
+        if (found) {
+          console.log(
+            `[fpdl] Resolved placeholder ${s.shortcode} from embedded data`,
+          );
+          globalStoriesCache.set(s.shortcode, found);
+          yield* fetchAttachments(found);
+          return;
+        }
+
+        // 3. Last ditch: deep scan all script tags for any JSON mentioning this shortcode
+        console.log(
+          `[fpdl] Placeholder ${s.shortcode} not found in cache/embedded. Performing deep scan...`,
+        );
+        const allScripts = document.querySelectorAll("script:not([src])");
+        for (const script of allScripts) {
+          const text = script.textContent || "";
+          if (text.includes(s.shortcode)) {
+            try {
+              if (
+                text.includes("window.__additionalDataLoaded") ||
+                text.includes("window.__p") ||
+                text.includes("window.__w") ||
+                text.includes("xdt_shortcode_media") ||
+                text.includes("GraphVideo") ||
+                text.includes("GraphImage")
+              ) {
+                // Try to find any JSON-like structures in the text
+                const matches = text.match(/\{"__typename":"[A-Za-z]+",.*?\}/g);
+                if (matches) {
+                  for (const m of matches) {
+                    try {
+                      const parsed = JSON.parse(m);
+                      if (
+                        (parsed.shortcode === s.shortcode ||
+                          parsed.code === s.shortcode) &&
+                        !parsed.placeholder
+                      ) {
+                        console.log(
+                          `[fpdl] Found ${s.shortcode} in deep script scan!`,
+                        );
+                        globalStoriesCache.set(s.shortcode, parsed);
+                        yield* fetchAttachments(parsed);
+                        return;
+                      }
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              /* ignore */
+            }
+          }
+        }
+
+        console.warn(
+          `[fpdl] Placeholder ${s.shortcode} not found in cache/embedded. Cache keys:`,
+          Array.from(globalStoriesCache.keys()).slice(0, 10),
+          "Falling back to fetch...",
+        );
+
+        // 2. Try fetching from Instagram's JSON endpoints
+        // We try /reels/ first, then /p/ as a fallback for 404s
+        const paths = [`/reels/${s.shortcode}/`, `/p/${s.shortcode}/`];
+        let data = null;
+        let lastError = null;
+
+        for (const path of paths) {
+          const url = `https://www.instagram.com${path}?__a=1&__d=dis`;
+          try {
+            const res = await fetch(url, {
+              headers: {
+                "X-Requested-With": "XMLHttpRequest",
+              },
+            });
+
+            if (res.status === 404) {
+              lastError = `404 at ${url}`;
+              continue; // Try next path
+            }
+            if (!res.ok) throw new Error(`HTTP ${res.status} at ${url}`);
+
+            const contentType = res.headers.get("content-type") || "";
+            if (!contentType.includes("json")) {
+              lastError = `Non-JSON response (${contentType}) at ${url}`;
+              continue;
+            }
+
+            data = await res.json();
+            if (data) break;
+          } catch (e) {
+            console.warn(`[fpdl] Failed to fetch from ${url}`, e);
+            lastError = e.message;
+          }
+        }
+
+        if (data) {
+          const item = data.items?.[0] || data.graphql?.shortcode_media;
+          if (item) {
+            yield* fetchAttachments(item);
+            return;
+          }
+        }
+
+        throw new Error(
+          `Could not find media data in placeholder response. Last error: ${lastError}`,
+        );
+      } catch (err) {
+        console.warn("[fpdl] Failed to fetch instagram placeholder", err);
+      }
+    }
+
+    if (s.edge_sidecar_to_children?.edges) {
+      for (const edge of s.edge_sidecar_to_children.edges) {
+        yield edge.node;
+      }
+    } else if (s.carousel_media) {
+      for (const item of s.carousel_media) {
+        yield item;
+      }
+    } else {
+      yield s;
+    }
+    return;
+  }
+
   // Handle placeholder stories (Reels where we rely on "fetch on download")
   if (/** @type {any} */ (story).placeholder) {
     try {
@@ -359,7 +617,10 @@ async function* fetchAttachments(story) {
  * @returns {string}
  */
 function sanitizeFilename(str) {
-  return str.replace(/[<>:"/\\|?*]/g, "_").trim();
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .trim();
 }
 
 /**
@@ -382,20 +643,25 @@ function buildFolderName(story) {
 
   // Group name part
   const group = getGroup(story);
-  if (group) {
-    parts.push(sanitizeFilename(group.name));
+  const sanitizedGroup = group ? sanitizeFilename(group.name) : "";
+  if (sanitizedGroup) {
+    parts.push(sanitizedGroup);
   }
 
   // Actor name part
   const actor = getStoryActor(story);
-  if (actor) {
-    parts.push(sanitizeFilename(actor.name));
+  const sanitizedActor = actor ? sanitizeFilename(actor.name) : "";
+  if (sanitizedActor) {
+    parts.push(sanitizedActor);
   }
 
   // Post ID part (always included)
-  parts.push(getStoryPostId(story));
+  const postId = getStoryPostId(story);
+  if (postId) {
+    parts.push(sanitizeFilename(postId));
+  }
 
-  return parts.join("_");
+  return parts.filter(Boolean).join("_");
 }
 
 /**
@@ -534,6 +800,15 @@ export async function* fetchStoryFiles(story) {
  * @returns {Date | undefined}
  */
 export function getCreateTime(story) {
+  // For InstagramStory
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    if (typeof s.taken_at_timestamp === "number") {
+      return new Date(s.taken_at_timestamp * 1000);
+    }
+    return undefined;
+  }
+
   // For StoryVideo, get publish_time directly from the media
   if (isStoryVideo(story)) {
     if (story.__typename === "Video") {
@@ -571,6 +846,10 @@ export function getGroup(story) {
  * @returns {string}
  */
 export function getStoryUrl(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    return `https://www.instagram.com/reels/${s.shortcode}/`;
+  }
   if (isStoryPost(story)) {
     return story.wwwURL;
   }
@@ -592,6 +871,10 @@ export function getStoryUrl(story) {
  * @returns {string | undefined}
  */
 export function getStoryMessage(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    return s.edge_media_to_caption?.edges?.[0]?.node?.text;
+  }
   if (isStoryPost(story)) {
     return story.message?.text;
   }
@@ -614,6 +897,10 @@ export function getStoryMessage(story) {
  * @returns {string}
  */
 export function getStoryPostId(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    return s.shortcode || s.code || s.pk || s.id;
+  }
   if (isStoryPost(story)) {
     return story.post_id;
   }
@@ -635,6 +922,10 @@ export function getStoryPostId(story) {
  * @returns {string}
  */
 export function getStoryId(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    return s.id || s.pk || s.shortcode || s.code;
+  }
   if (isStoryPost(story)) {
     return story.id;
   }
@@ -656,6 +947,17 @@ export function getStoryId(story) {
  * @returns {User | undefined}
  */
 export function getStoryActor(story) {
+  if (isInstagramStory(story)) {
+    const s = /** @type {any} */ (story);
+    if (s.owner) {
+      return {
+        id: s.owner.id,
+        name: s.owner.full_name || s.owner.username,
+        username: s.owner.username,
+      };
+    }
+    return undefined;
+  }
   if (isStoryPost(story)) {
     return story.actors?.[0];
   }
@@ -832,19 +1134,70 @@ export function isStoryReel(obj) {
 // Since I cannot debug, I will implement a permissive "StoryVideo" check that handles the Reel case.
 
 /**
+ * Check if an object is an Instagram media item.
+ * @param {unknown} obj
+ * @returns {boolean}
+ */
+export function isInstagramStory(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  const o = /** @type {Record<string, unknown>} */ (obj);
+
+  if (o.__typename === "InstagramStory" || o.placeholder === true) return true;
+
+  // Common Instagram GraphQL/API Typenames
+  const typenames = new Set([
+    "XDTGraphVideo",
+    "XDTGraphImage",
+    "XDTGraphSidecar",
+    "GraphVideo",
+    "GraphImage",
+    "GraphSidecar",
+    "XDTGraphMedia",
+    "GraphMedia",
+    "StoryVideo",
+    "StoryImage",
+  ]);
+
+  if (typenames.has(String(o.__typename))) {
+    return !!(o.shortcode || o.id || o.code);
+  }
+
+  if (
+    (o.code ||
+      o.shortcode ||
+      o.pk ||
+      (typeof o.id === "string" && o.id.includes("_"))) &&
+    (o.image_versions2 ||
+      o.video_versions ||
+      o.display_url ||
+      o.carousel_media ||
+      o.media_type)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Check if an object is a valid Story (StoryPost, StoryVideo, or StoryWatch).
  * @param {unknown} obj
  * @returns {obj is Story}
  */
 function isStory(obj) {
-  return isStoryPost(obj) || isStoryVideo(obj) || isStoryWatch(obj);
+  return (
+    isInstagramStory(obj) ||
+    isStoryPost(obj) ||
+    isStoryVideo(obj) ||
+    isStoryWatch(obj)
+  );
 }
 
 /**
  * Recursively extract stories from deeply nested objects.
  * Stories are identified by having id, post_id, and attachments array.
  * @param {unknown} obj
- * @param {Story[]} [results] - Array to collect stories, deduplicates by post_id
+ * @param {Story[]} [results] - Array to collect stories
  * @returns {Story[]}
  */
 export function extractStories(obj, results = []) {
@@ -855,7 +1208,20 @@ export function extractStories(obj, results = []) {
   // Check if this object is a valid story
   const objIsStory = isStory(obj);
   if (objIsStory) {
-    results.push(obj);
+    const id = getStoryId(obj);
+    if (id) {
+      // Deduplicate in results
+      const exists = results.some((s) => getStoryId(s) === id);
+      if (!exists) {
+        results.push(obj);
+      }
+
+      // Populate global cache for placeholder resolution
+      const postId = getStoryPostId(obj);
+      if (postId && !(/** @type {any} */ (obj).placeholder)) {
+        globalStoriesCache.set(postId, obj);
+      }
+    }
   }
 
   // Recurse into arrays and objects
@@ -1006,7 +1372,7 @@ export function extractVideoUrls(obj) {
 
 /**
  * Extract stories embedded in the initial HTML page load.
- * These are delivered via <script type="application/json"> tags.
+ * These are delivered via <script type="application/json"> tags or window variables.
  * @returns {Story[]}
  */
 function extractEmbeddedStories() {
@@ -1029,25 +1395,35 @@ function extractEmbeddedStories() {
     }
   }
 
+  // Instagram specific embedded data
+  if (window.location.hostname.includes("instagram.com")) {
+    try {
+      // @ts-ignore
+      if (window._sharedData) extractStories(window._sharedData, stories);
+      // @ts-ignore
+      if (window.__additionalData)
+        extractStories(window.__additionalData, stories);
+      // @ts-ignore
+      if (window.__player_data) extractStories(window.__player_data, stories);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Populate global cache from found stories
+  for (const s of stories) {
+    const postId = getStoryPostId(s);
+    if (postId && !s.placeholder) {
+      globalStoriesCache.set(postId, s);
+    }
+  }
+
   return stories;
 }
 
 /**
  * Facebook uses different GraphQL operation ("friendly") names depending on context.
- * - CometGroupDiscussionRootSuccessQuery: Group discussion page
- * - CometModernHomeFeedQuery: Home feed
- * - CometNewsFeedPaginationQuery: Home feed pagination
- * - CometVideoHomeFeedRootQuery: Video home feed root (Watch tab)
- * - CometVideoHomeFeedSectionPaginationQuery: Video home feed pagination (Watch tab)
- * - GroupsCometCrossGroupFeedContainerQuery: Cross-group feed (/groups/feed/)
- * - GroupsCometCrossGroupFeedPaginationQuery: Cross-group feed pagination
- * - GroupsCometFeedRegularStoriesPaginationQuery: Group feed
- * - ProfileCometContextualProfileGroupPostsFeedPaginationQuery: Group member profile feed
- * - ProfileCometContextualProfileRootQuery: Contextual profile root
- * - ProfileCometTimelineFeedQuery: User profile timeline
- * - ProfileCometTimelineFeedRefetchQuery: User profile timeline refetch/pagination
- * - SearchCometResultsInitialResultsQuery: Search results
- * - SearchCometResultsPaginatedResultsQuery: Search results pagination
+ * ...
  */
 const TARGET_API_NAMES = new Set([
   "CometGroupDiscussionRootSuccessQuery",
@@ -1073,13 +1449,13 @@ const TARGET_API_NAMES = new Set([
  * @returns {() => void}
  */
 export function storyListener(cb) {
-  // Poll for embedded stories every 500ms for 10 seconds
+  // Poll for embedded stories every 1000ms for 30 seconds
   /** @type {Set<string>} */
   const emittedStoryIds = new Set();
 
   let elapsed = 0;
-  const pollInterval = 500;
-  const maxDuration = 10000;
+  const pollInterval = 1000;
+  const maxDuration = 30000;
 
   const intervalId = setInterval(() => {
     elapsed += pollInterval;
@@ -1103,18 +1479,22 @@ export function storyListener(cb) {
 
   // Then listen for new stories from GraphQL responses
   return graphqlListener((ev) => {
+    const isInstagram = ev.url.includes("instagram.com");
+
     const apiName =
       ev.requestHeaders["x-fb-friendly-name"] ||
       ev.requestPayload["fb_api_req_friendly_name"];
 
-    if (!apiName) return;
-
-    // Check allow list or keywords
-    const isTarget =
-      TARGET_API_NAMES.has(apiName) ||
-      apiName.includes("Video") ||
-      apiName.includes("Reel") ||
-      apiName.includes("Clip");
+    let isTarget = false;
+    if (isInstagram) {
+      isTarget = true;
+    } else if (apiName) {
+      isTarget =
+        TARGET_API_NAMES.has(apiName) ||
+        apiName.includes("Video") ||
+        apiName.includes("Reel") ||
+        apiName.includes("Clip");
+    }
 
     if (!isTarget) return;
 
@@ -1125,6 +1505,12 @@ export function storyListener(cb) {
 
     for (const story of stories) {
       const storyId = getStoryId(story);
+      // Cache all valid stories by their ID/shortcode for placeholder resolution
+      const postId = getStoryPostId(story);
+      if (postId && !story.placeholder) {
+        globalStoriesCache.set(postId, story);
+      }
+
       if (emittedStoryIds.has(storyId)) continue;
       emittedStoryIds.add(storyId);
       try {

@@ -263,10 +263,19 @@ XMLHttpRequest.prototype.open = function patchedOpen(
   url,
   async = true,
   username,
-  password
+  password,
 ) {
   const u = typeof url === "string" ? url : url.href;
-  if (method.toUpperCase() === "POST" && u.includes("/api/graphql")) {
+  const isFacebookGraphql = u.includes("/api/graphql");
+  const isInstagramApi =
+    u.includes("/graphql/query") ||
+    u.includes("/api/v1/") ||
+    u.includes("i.instagram.com/api/");
+
+  const isPost = method.toUpperCase() === "POST";
+  const isGet = method.toUpperCase() === "GET";
+
+  if ((isFacebookGraphql && isPost) || (isInstagramApi && (isPost || isGet))) {
     xhrUrl.set(this, u);
     xhrIsTarget.set(this, true);
     xhrHeaders.set(this, {});
@@ -286,12 +295,35 @@ XMLHttpRequest.prototype.open = function patchedOpen(
         }
       }
 
+      let responseBody = [];
+      try {
+        if (isFacebookGraphql) {
+          responseBody = parseNdjson(this.responseText);
+        } else {
+          const contentType = responseHeaders["content-type"] || "";
+          const text = this.responseText.trim();
+          if (
+            contentType.includes("json") ||
+            text.startsWith("{") ||
+            text.startsWith("[")
+          ) {
+            const parsed = JSON.parse(text);
+            responseBody = Array.isArray(parsed) ? parsed : [parsed];
+          }
+        }
+      } catch (e) {
+        // Not JSON or parse error, skip
+        return;
+      }
+
+      if (responseBody.length === 0) return;
+
       emit({
         url: xhrUrl.get(this) || "",
         requestHeaders: xhrHeaders.get(this) || {},
         responseHeaders,
         requestPayload: xhrPayload.get(this) || {},
-        responseBody: parseNdjson(this.responseText),
+        responseBody,
         status: this.status,
       });
     });
@@ -306,7 +338,7 @@ XMLHttpRequest.prototype.open = function patchedOpen(
  */
 XMLHttpRequest.prototype.setRequestHeader = function patchedSetRequestHeader(
   name,
-  value
+  value,
 ) {
   const headers = xhrHeaders.get(this);
   if (headers) {
@@ -330,7 +362,7 @@ XMLHttpRequest.prototype.send = function patchedSend(body) {
       const parts = [];
       for (const [k, v] of body.entries()) {
         parts.push(
-          `${encodeURIComponent(String(k))}=${encodeURIComponent(String(v))}`
+          `${encodeURIComponent(String(k))}=${encodeURIComponent(String(v))}`,
         );
       }
       bodyText = parts.join("&");
@@ -358,9 +390,16 @@ window.fetch = async function patchedFetch(input, init) {
     typeof input === "string"
       ? input
       : input instanceof URL
-      ? input.href
-      : input.url;
-  if (url.includes("/api/graphql")) {
+        ? input.href
+        : input.url;
+
+  const isFacebookGraphql = url.includes("/api/graphql");
+  const isInstagramApi =
+    url.includes("/graphql/query") ||
+    url.includes("/api/v1/") ||
+    url.includes("i.instagram.com/api/");
+
+  if (isFacebookGraphql || isInstagramApi) {
     // Clone the response to read its body without consuming the original
     promise
       .then(async (res) => {
@@ -373,11 +412,11 @@ window.fetch = async function patchedFetch(input, init) {
           if (init && init.headers) {
             if (init.headers instanceof Headers) {
               init.headers.forEach(
-                (v, k) => (requestHeaders[k.toLowerCase()] = v)
+                (v, k) => (requestHeaders[k.toLowerCase()] = v),
               );
             } else {
               Object.entries(init.headers).forEach(
-                ([k, v]) => (requestHeaders[k.toLowerCase()] = v)
+                ([k, v]) => (requestHeaders[k.toLowerCase()] = v),
               );
             }
           }
@@ -395,12 +434,35 @@ window.fetch = async function patchedFetch(input, init) {
             }
           }
 
+          let responseBody = [];
+          try {
+            if (isFacebookGraphql) {
+              responseBody = parseNdjson(text);
+            } else {
+              const contentType = res.headers.get("content-type") || "";
+              const trimmed = text.trim();
+              if (
+                contentType.includes("json") ||
+                trimmed.startsWith("{") ||
+                trimmed.startsWith("[")
+              ) {
+                const parsed = JSON.parse(trimmed);
+                responseBody = Array.isArray(parsed) ? parsed : [parsed];
+              }
+            }
+          } catch (e) {
+            // Not JSON or parse error, skip
+            return;
+          }
+
+          if (responseBody.length === 0) return;
+
           emit({
             url: url,
             requestHeaders: requestHeaders,
             responseHeaders: {}, // Fetch Headers are harder to sync synchronously
             requestPayload: requestPayload,
-            responseBody: parseNdjson(text),
+            responseBody,
             status: res.status,
           });
         } catch (err) {

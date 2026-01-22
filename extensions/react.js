@@ -1,8 +1,3 @@
-// @ts-ignore
-await import("../node_modules/umd-react/dist/react.production.min.js");
-// @ts-ignore
-await import("../node_modules/umd-react/dist/react-dom.production.min.js");
-
 /**
  * @template T
  * @param {() => T | null | undefined} getter
@@ -10,19 +5,50 @@ await import("../node_modules/umd-react/dist/react-dom.production.min.js");
  * @param {number} delay
  * @returns {Promise<T>}
  */
-async function waitFor(getter, maxRetries = 50, delay = 200) {
+async function waitFor(getter, maxRetries = 200, delay = 100) {
   for (let i = 0; i < maxRetries; i++) {
-    const value = getter();
-    if (value) return value;
+    try {
+      const value = getter();
+      if (value) return value;
+    } catch (e) {
+      // ignore getter errors
+    }
     await new Promise((r) => setTimeout(r, delay));
   }
-  throw new Error("waitFor timeout");
+  const error = new Error(`waitFor timeout after ${maxRetries * delay}ms`);
+  console.error("[fpdl] waitFor timeout", {
+    getter: getter.toString(),
+    windowReact: !!window.React,
+    windowReactDOM: !!window.ReactDOM,
+    topReact: !!window.top?.React,
+    hasRequire: typeof require === "function",
+  });
+  throw error;
 }
 
-/** @type {typeof import('react')} */
-// @ts-ignore
-export const React = await waitFor(() => require("React"));
+/**
+ * Get React or ReactDOM from global scope or parent frames.
+ * @param {string} name
+ * @returns {any}
+ */
+function getGlobal(name) {
+  // @ts-ignore
+  const g = window[name] || window.parent?.[name] || window.top?.[name];
+  if (g) return g;
 
-/** @type {typeof import('react-dom/client')} */
+  // Try Instagram's internal require if available
+  try {
+    // @ts-ignore
+    if (typeof require === "function") {
+      return require(name);
+    }
+  } catch (e) {}
+
+  return null;
+}
+
 // @ts-ignore
-export const ReactDOM = await waitFor(() => require("ReactDOM"));
+export const React = await waitFor(() => getGlobal("React"));
+
+// @ts-ignore
+export const ReactDOM = await waitFor(() => getGlobal("ReactDOM"));

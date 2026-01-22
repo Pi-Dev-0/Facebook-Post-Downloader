@@ -34,7 +34,7 @@ function useChromeMessage(type, callback) {
       if (!event.data.__fpdl) return;
       if (event.data.type === type) {
         callback(
-          /** @type {Extract<ChromeMessage, { type: T }>} */ (event.data)
+          /** @type {Extract<ChromeMessage, { type: T }>} */ (event.data),
         );
       }
     };
@@ -427,14 +427,14 @@ function StoryRow({ story, selected, onToggle, downloadedCount }) {
                 isDownloaded ? "fpdl-status-done" : "fpdl-status-downloading"
               }`,
             },
-            isDownloaded ? "Done" : `${downloadedCount}/${total}`
+            isDownloaded ? "Done" : `${downloadedCount}/${total}`,
           )
         : React.createElement("input", {
             type: "checkbox",
             checked: selected,
             onChange: onToggle,
             onClick: (/** @type {MouseEvent} */ e) => e.stopPropagation(),
-          })
+          }),
     ),
     React.createElement(
       "td",
@@ -444,12 +444,12 @@ function StoryRow({ story, selected, onToggle, downloadedCount }) {
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
-      }) ?? ""
+      }) ?? "",
     ),
     React.createElement(
       "td",
       { className: "fpdl-td fpdl-col-id" },
-      getStoryPostId(story)
+      getStoryPostId(story),
     ),
     React.createElement(
       "td",
@@ -457,19 +457,19 @@ function StoryRow({ story, selected, onToggle, downloadedCount }) {
       React.createElement(
         "span",
         { className: "fpdl-msg-text", title: getStoryMessage(story) },
-        getStoryMessage(story) ?? ""
-      )
+        getStoryMessage(story) ?? "",
+      ),
     ),
     React.createElement(
       "td",
       { className: "fpdl-td fpdl-col-meta" },
-      isStoryPost(story) && story.attached_story ? "Yes" : "-"
+      isStoryPost(story) && story.attached_story ? "Yes" : "-",
     ),
     React.createElement(
       "td",
       { className: "fpdl-td fpdl-col-meta" },
-      getAttachmentCount(story)
-    )
+      getAttachmentCount(story),
+    ),
   );
 }
 
@@ -485,7 +485,7 @@ function StoryTable({
   downloadingStories,
 }) {
   const selectableStories = stories.filter(
-    (s) => !(getStoryId(s) in downloadingStories)
+    (s) => !(getStoryId(s) in downloadingStories),
   );
   const allSelected =
     selectableStories.length > 0 &&
@@ -511,30 +511,30 @@ function StoryTable({
               checked: allSelected,
               onChange: toggleAllStories,
               disabled: selectableStories.length === 0,
-            })
+            }),
           ),
           React.createElement(
             "th",
             { className: "fpdl-th fpdl-col-date" },
-            "Date"
+            "Date",
           ),
           React.createElement("th", { className: "fpdl-th fpdl-col-id" }, "ID"),
           React.createElement(
             "th",
             { className: "fpdl-th fpdl-col-msg" },
-            "Message"
+            "Message",
           ),
           React.createElement(
             "th",
             { className: "fpdl-th fpdl-col-meta" },
-            "Sub-Post"
+            "Sub-Post",
           ),
           React.createElement(
             "th",
             { className: "fpdl-th fpdl-col-meta" },
-            "Files"
-          )
-        )
+            "Files",
+          ),
+        ),
       ),
       React.createElement(
         "tbody",
@@ -546,10 +546,10 @@ function StoryTable({
             selected: selectedStories.has(getStoryId(story)),
             onToggle: () => toggleStory(story),
             downloadedCount: downloadingStories[getStoryId(story)],
-          })
-        )
-      )
-    )
+          }),
+        ),
+      ),
+    ),
   );
 }
 
@@ -574,7 +574,7 @@ function HideButton({
           return downloadingCount === getDownloadCount(s);
         })
         .map((s) => getStoryId(s)),
-    [visibleStories, downloadingStories]
+    [visibleStories, downloadingStories],
   );
 
   const hideSelected = useCallback(() => {
@@ -619,7 +619,7 @@ function HideButton({
       onClick: action,
       style: { marginLeft: "8px" },
     },
-    label
+    label,
   );
 }
 
@@ -650,7 +650,7 @@ function useDialogOpen({ clearSelectedStories }) {
         trackEvent("DialogToggled", { open: newOpen });
         return newOpen;
       });
-    }, [])
+    }, []),
   );
 
   return { open, closeDialog };
@@ -684,7 +684,7 @@ function useStoryListener({ initialStories, onStory }) {
  */
 function useSelectedStories({ stories, visibleStories }) {
   const [selectedStories, setSelectedStories] = useState(
-    /** @type {Set<string>} */ (new Set())
+    /** @type {Set<string>} */ (new Set()),
   );
 
   const toggleStory = useCallback(
@@ -702,7 +702,7 @@ function useSelectedStories({ stories, visibleStories }) {
         return next;
       });
     },
-    [stories.length]
+    [stories.length],
   );
 
   const toggleAllStories = useCallback(() => {
@@ -743,12 +743,12 @@ function useSelectedStories({ stories, visibleStories }) {
  */
 function useVisibleStories({ stories }) {
   const [hiddenStories, setHiddenStories] = useState(
-    /** @type {Set<string>} */ (new Set())
+    /** @type {Set<string>} */ (new Set()),
   );
 
   const visibleStories = useMemo(
     () => stories.filter((s) => !hiddenStories.has(getStoryId(s))),
-    [stories, hiddenStories]
+    [stories, hiddenStories],
   );
 
   return { visibleStories, hiddenStories, setHiddenStories };
@@ -766,7 +766,7 @@ function useDownloadingStories({
   clearSelectedStories,
 }) {
   const [downloadingStories, setDownloadingStories] = useState(
-    /** @type {{ [storyId: string]: number }} */ ({})
+    /** @type {{ [storyId: string]: number }} */ ({}),
   );
   const downloadQueueRef = React.useRef(/** @type {Story[]} */ ([]));
   const isProcessingRef = React.useRef(false);
@@ -778,7 +778,7 @@ function useDownloadingStories({
         ...prev,
         [message.storyId]: (prev[message.storyId] ?? 0) + 1,
       }));
-    }, [])
+    }, []),
   );
 
   const processDownloadQueue = useCallback(async () => {
@@ -797,7 +797,7 @@ function useDownloadingStories({
         console.error(
           "[fpdl] download failed for story",
           getStoryId(story),
-          err
+          err,
         );
       }
 
@@ -811,7 +811,7 @@ function useDownloadingStories({
 
   const downloadStories = useCallback(() => {
     const storiesToDownload = visibleStories.filter((s) =>
-      selectedStories.has(getStoryId(s))
+      selectedStories.has(getStoryId(s)),
     );
     if (storiesToDownload.length === 0) return;
 
@@ -848,13 +848,13 @@ function useDownloadingStories({
 }
 
 /**
- * Main application component for the Facebook Post Downloader.
+ * Main application component for the Social Post Downloader.
  * @param {{ initialStories: Story[], onStory: (cb: (story: Story) => void) => void }} props
  */
 function App({ initialStories, onStory }) {
   const stories = useStoryListener({ initialStories, onStory });
   const { visibleStories, hiddenStories, setHiddenStories } = useVisibleStories(
-    { stories }
+    { stories },
   );
   const {
     selectedStories,
@@ -890,7 +890,7 @@ function App({ initialStories, onStory }) {
     useCallback(async (story) => {
       // trackEvent("InjectedDownloadClicked", downloadingCountRef.current);
       await downloadStory(story);
-    }, [])
+    }, []),
   );
 
   if (!open) return null;
@@ -913,13 +913,13 @@ function App({ initialStories, onStory }) {
             rel: "noopener noreferrer",
             title: "Sponsor",
           },
-          "♥"
+          "♥",
         ),
         React.createElement(
           "div",
           { className: "fpdl-title" },
-          `FPDL (${visibleStories.length})`
-        )
+          `Social Downloader (${visibleStories.length})`,
+        ),
       ),
       React.createElement(
         "div",
@@ -942,7 +942,7 @@ function App({ initialStories, onStory }) {
           },
           `Download ${
             selectedStories.size > 0 ? `(${selectedStories.size})` : ""
-          }`
+          }`,
         ),
         React.createElement(
           "button",
@@ -952,9 +952,9 @@ function App({ initialStories, onStory }) {
             onClick: closeDialog,
             title: "Close",
           },
-          "×"
-        )
-      )
+          "×",
+        ),
+      ),
     ),
     React.createElement(StoryTable, {
       stories: visibleStories,
@@ -962,7 +962,7 @@ function App({ initialStories, onStory }) {
       toggleStory,
       toggleAllStories,
       downloadingStories,
-    })
+    }),
   );
 }
 
@@ -993,7 +993,7 @@ function run() {
       onStory: (cb) => {
         storyCallback = cb;
       },
-    })
+    }),
   );
 }
 

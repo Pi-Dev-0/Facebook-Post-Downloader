@@ -31,7 +31,7 @@ function isActiveReel(container) {
  */
 function getValueFromReactFiber(element, accessor, maxDepth = 50) {
   const fiberKey = Object.keys(element || {}).find((k) =>
-    k.startsWith("__reactFiber$")
+    k.startsWith("__reactFiber$"),
   );
   if (!fiberKey) return null;
 
@@ -140,7 +140,7 @@ function findStoryForButton(actionBtn, stories) {
   // Fall back to matching by permalink_url to story URL
   const permalinkUrl = getValueFromReactFiber(
     actionBtn,
-    (p) => p?.story?.permalink_url
+    (p) => p?.story?.permalink_url,
   );
   if (permalinkUrl) {
     const story = stories.find((s) => getStoryUrl(s) === permalinkUrl);
@@ -158,7 +158,7 @@ function findStoryForButton(actionBtn, stories) {
  */
 function injectPostFeedButtons(stories, downloadStory) {
   const actionButtons = document.querySelectorAll(
-    '[aria-label="Actions for this post"]'
+    '[aria-label="Actions for this post"]',
   );
 
   for (const actionBtn of actionButtons) {
@@ -222,7 +222,7 @@ function injectVideoFeedButtons(stories, downloadStory) {
  */
 function injectWatchVideoButtons(stories, downloadStory) {
   const actionButtons = document.querySelectorAll(
-    '[aria-label="More options for video"]'
+    '[aria-label="More options for video"]',
   );
 
   for (const actionBtn of actionButtons) {
@@ -242,7 +242,7 @@ function injectWatchVideoButtons(stories, downloadStory) {
 
     // Check if existing button is for a different video, if so remove it
     const existingWrapper = buttonWrapper.querySelector(
-      ".fpdl-download-btn-wrapper"
+      ".fpdl-download-btn-wrapper",
     );
     if (existingWrapper) {
       if (existingWrapper.getAttribute("data-video-id") === videoId) continue;
@@ -313,14 +313,14 @@ function injectReelsButtons(stories, downloadStory) {
       getValueFromReactFiber(
         anchorBtn,
         (p) => p?.feedback?.associated_group_video?.id,
-        50
+        50,
       ) ||
       getValueFromReactFiber(
         anchorBtn,
         (p) =>
           p?.feedback?.video_view_count_renderer?.feedback
             ?.associated_group_video?.id,
-        50
+        50,
       );
 
     // 2. Try simple videoID/postID props
@@ -328,7 +328,7 @@ function injectReelsButtons(stories, downloadStory) {
       extractedId = getValueFromReactFiber(
         anchorBtn,
         (p) => p?.videoID || p?.storyPostID || p?.upvoteInput?.storyID,
-        50
+        50,
       );
     }
 
@@ -337,7 +337,7 @@ function injectReelsButtons(stories, downloadStory) {
       extractedId = getValueFromReactFiber(
         anchorBtn,
         (p) => p?.feedback?.associated_video?.id,
-        50
+        50,
       );
     }
 
@@ -358,7 +358,7 @@ function injectReelsButtons(stories, downloadStory) {
 
     // Try to find story
     let story = stories.find(
-      (s) => getStoryId(s) === effectiveId || getStoryPostId(s) === effectiveId
+      (s) => getStoryId(s) === effectiveId || getStoryPostId(s) === effectiveId,
     );
 
     // Fallback: Check attachments or URL
@@ -417,15 +417,155 @@ function injectReelsButtons(stories, downloadStory) {
 }
 
 /**
+ * Inject download buttons into Instagram Feed and Reels.
+ * @param {Story[]} stories
+ * @param {(story: Story) => Promise<void>} downloadStory
+ */
+function injectInstagramButtons(stories, downloadStory) {
+  if (!window.location.hostname.includes("instagram.com")) return;
+
+  // 1. Feed Posts (articles) - skip on home feed
+  if (window.location.pathname !== '/') {
+    const articles = document.querySelectorAll("article");
+    for (const article of articles) {
+    // 1. From the timestamp link (most reliable)
+    let shortcode = "";
+    const timeLink = article.querySelector("time")?.closest("a");
+    if (timeLink) {
+      const href = timeLink.getAttribute("href") || "";
+      const match = href.match(/\/(?:p|reels|reel)\/([A-Za-z0-9_-]+)/);
+      if (match) shortcode = match[1];
+    }
+
+    if (!shortcode) {
+      const link = article.querySelector(
+        'a[href*="/p/"], a[href*="/reels/"], a[href*="/reel/"]',
+      );
+      if (link) {
+        const href = link.getAttribute("href") || "";
+        const match = href.match(/\/(?:p|reels|reel)\/([A-Za-z0-9_-]+)/);
+        if (match) shortcode = match[1];
+      }
+    }
+
+    if (!shortcode) {
+      shortcode = getValueFromReactFiber(
+        article,
+        (p) => p?.shortcode || p?.code || p?.post?.code,
+      );
+    }
+
+    if (!shortcode) continue;
+
+    // Check if button already exists and if it's a placeholder
+    const existingBtn = article.querySelector(
+      `.fpdl-download-btn[data-shortcode="${shortcode}"]`,
+    );
+    const isPlaceholder = existingBtn?.dataset.placeholder === "true";
+
+    const story = stories.find((s) => getStoryPostId(s) === shortcode) || {
+      id: shortcode,
+      shortcode: shortcode,
+      __typename: "InstagramStory",
+      placeholder: true,
+    };
+
+    if (existingBtn) {
+      if (isPlaceholder && !story.placeholder) {
+        // Upgrade placeholder to real story button
+        existingBtn.remove();
+      } else {
+        continue;
+      }
+    }
+
+    const actionRow =
+      article.querySelector("section") || article.querySelector(".xh8yej3");
+    if (!actionRow) continue;
+
+    const downloadBtn = createDownloadButton(story, downloadStory);
+    downloadBtn.setAttribute("data-shortcode", shortcode);
+    if (story.placeholder) downloadBtn.dataset.placeholder = "true";
+    downloadBtn.style.marginLeft = "8px";
+
+    actionRow.appendChild(downloadBtn);
+  }
+  }
+
+  // 2. Reels (fullscreen viewer)
+  const reels = document.querySelectorAll(
+    'div[role="dialog"] video, main video',
+  );
+  for (const video of reels) {
+    const container =
+      video.closest('div[style*="height"]') || video.closest("section");
+    if (!container) continue;
+
+    let shortcode;
+    const match = window.location.pathname.match(
+      /\/(?:reels|reel|p)\/([A-Za-z0-9_-]+)/,
+    );
+    if (match && isActiveReel(container)) {
+      shortcode = match[1];
+    } else {
+      shortcode = getValueFromReactFiber(
+        video,
+        (p) => p?.videoData?.shortcode || p?.shortcode || p?.post?.code,
+      );
+    }
+
+    if (!shortcode) continue;
+
+    const existingBtn = container.querySelector(
+      `.fpdl-download-btn[data-shortcode="${shortcode}"]`,
+    );
+    const isPlaceholder = existingBtn?.dataset.placeholder === "true";
+
+    const story = stories.find((s) => getStoryPostId(s) === shortcode) || {
+      id: shortcode,
+      shortcode: shortcode,
+      __typename: "InstagramStory",
+      placeholder: true,
+    };
+
+    if (existingBtn) {
+      if (isPlaceholder && !story.placeholder) {
+        existingBtn.remove();
+      } else {
+        continue;
+      }
+    }
+
+    const sidebar =
+      container.querySelector("div.x1oa3qoh") ||
+      container.querySelector('div[style*="flex-direction: column"]') ||
+      container.querySelector(".x10l6tqk.x13vifvy");
+
+    if (!sidebar) continue;
+
+    const downloadBtn = createDownloadButton(story, downloadStory);
+    downloadBtn.setAttribute("data-shortcode", shortcode);
+    if (story.placeholder) downloadBtn.dataset.placeholder = "true";
+    downloadBtn.style.marginTop = "12px";
+
+    sidebar.appendChild(downloadBtn);
+  }
+}
+
+/**
  * Inject download buttons into all supported page types.
  * @param {Story[]} stories
  * @param {(story: Story) => Promise<void>} downloadStory
  */
 function injectDownloadButtons(stories, downloadStory) {
-  injectPostFeedButtons(stories, downloadStory);
-  injectVideoFeedButtons(stories, downloadStory);
-  injectWatchVideoButtons(stories, downloadStory);
-  injectReelsButtons(stories, downloadStory);
+  if (window.location.hostname.includes("facebook.com")) {
+    injectPostFeedButtons(stories, downloadStory);
+    injectVideoFeedButtons(stories, downloadStory);
+    injectWatchVideoButtons(stories, downloadStory);
+    injectReelsButtons(stories, downloadStory);
+  } else if (window.location.hostname.includes("instagram.com")) {
+    injectInstagramButtons(stories, downloadStory);
+  }
 }
 
 /**
@@ -497,6 +637,31 @@ function injectDownloadButtonStyles() {
         .fpdl-download-btn--watch:hover {
              background: rgba(59, 130, 246, 0.15);
         }
+        .fpdl-download-btn--instagram {
+            color: inherit;
+            opacity: 0.8;
+        }
+        .fpdl-download-btn--instagram:hover {
+            opacity: 1;
+            background: transparent;
+        }
+        .fpdl-download-btn--instagram-reel {
+            color: white;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            width: 40px !important;
+            height: 40px !important;
+            border-radius: 50%;
+            margin-bottom: 8px;
+        }
+        .fpdl-download-btn--instagram-reel:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.1);
+        }
+        .xrvj5dj {
+            display: flex !important;
+        }
     `;
   document.head.appendChild(style);
 }
@@ -516,7 +681,7 @@ export function useDownloadButtonInjection(stories, downloadStory) {
   useEffect(() => {
     const { call: inject, cancel } = debounce(
       () => injectDownloadButtons(stories, downloadStory),
-      100
+      100,
     );
 
     const observer = new MutationObserver(inject);
