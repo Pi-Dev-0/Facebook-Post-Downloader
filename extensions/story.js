@@ -351,6 +351,71 @@ async function* fetchAttachments(story) {
           }
         }
 
+        // Helper to solve the "escaped characters" and "nested structure" issue in scripts
+        const scanScriptText = (text) => {
+          if (!text || !text.includes(s.shortcode)) return null;
+          
+          // 1. Precise Unescaping: Handle JSON escaping (\/ and \uXXXX)
+          const unescaped = text.replace(/\\\/|\\u0026|\\u003d/g, (m) => {
+            if (m === "\\\/") return "/";
+            if (m === "\\u0026") return "&";
+            if (m === "\\u003d") return "=";
+            return m;
+          });
+
+          // 2. Proximity-based detection: Find the video URL closest to the shortcode
+          const shortcodeIndex = unescaped.indexOf(s.shortcode);
+          // Look in a generous window around the shortcode (Instagram data is often large)
+          const windowStart = Math.max(0, shortcodeIndex - 2000);
+          const windowEnd = Math.min(unescaped.length, shortcodeIndex + 5000);
+          const context = unescaped.substring(windowStart, windowEnd);
+
+          // Priority 1: .mp4 Video
+          const mp4Match = context.match(/"(?:video_)?url"\s*:\s*"([^"]+?\.mp4[^"]*?)"/);
+          if (mp4Match) {
+              console.log(`[fpdl] Found mp4 URL for ${s.shortcode} in script proximity.`);
+              return { __typename: "Video", video_url: mp4Match[1] };
+          }
+
+          // Priority 2: JSON objects matching shortcode
+          const matches = context.match(/\{"__typename":"[A-Za-z]+",.*?\}(?=\s*[,\]\}]|$)/g);
+          if (matches) {
+            for (const m of matches) {
+              try {
+                const parsed = JSON.parse(m.replace(/\\\/|\\u0026/g, (x) => (x === '\\\/' ? '/' : '&')));
+                if ((parsed.shortcode === s.shortcode || parsed.code === s.shortcode) && !parsed.placeholder) {
+                   return parsed;
+                }
+              } catch (e) { /* ignore */ }
+            }
+          }
+
+          // Priority 3: Any valid image if video was missed
+          const imgMatch = context.match(/"display_url"\s*:\s*"([^"]+?\.jpg[^"]*?)"/);
+          if (imgMatch) {
+              console.log(`[fpdl] Found image fallback for ${s.shortcode} in script proximity.`);
+              return { __typename: "Photo", display_url: imgMatch[1] };
+          }
+
+          return null;
+        };
+
+        // Step 1.5: Scan current document scripts (for popups/feed posts already in memory)
+        console.log(`[fpdl] Searching current document scripts for ${s.shortcode}...`);
+        const localScripts = document.querySelectorAll("script:not([src])");
+        for (const script of localScripts) {
+          const result = scanScriptText(script.textContent || "");
+          if (result) {
+            console.log(`[fpdl] Resolved ${s.shortcode} from local script data.`);
+            if (result.video_url || result.__typename === "Video") {
+              yield result;
+              return;
+            }
+            yield* fetchAttachments(result);
+            return;
+          }
+        }
+
         // Step 2: Try to find in cache or embedded data first
         const cached = globalStoriesCache.get(s.shortcode);
         if (cached && !cached.placeholder) {
@@ -400,59 +465,34 @@ async function* fetchAttachments(story) {
           yield { __typename: "Video", video_url: ogVideoMeta.content };
           return;
         }
+
+        // Store image as fallback but continue searching for video
+        let imageFallback = null;
         if (ogImageMeta && ogImageMeta.content) {
-          console.log(
-            `[fpdl] Resolved placeholder ${s.shortcode} from og:image meta tag.`,
-          );
-          yield { __typename: "Photo", display_url: ogImageMeta.content };
-          return;
+          imageFallback = { __typename: "Photo", display_url: ogImageMeta.content };
         }
 
-
-        // Fallback: Deep scan script tags if meta tags don't provide media
+        // Fallback: Deep scan script tags in fetched HTML
         console.log(
-          `[fpdl] No media in meta tags for ${s.shortcode}. Performing deep script scan...`,
+          `[fpdl] No og:video in meta tags for ${s.shortcode}. Performing deep script scan on fetched HTML...`,
         );
         const allScripts = doc.querySelectorAll("script:not([src])");
         for (const script of allScripts) {
-          const text = script.textContent || "";
-          if (text.includes(s.shortcode)) {
-            try {
-              if (
-                text.includes("window.__additionalDataLoaded") ||
-                text.includes("window.__p") ||
-                text.includes("window.__w") ||
-                text.includes("xdt_shortcode_media") ||
-                text.includes("GraphVideo") ||
-                text.includes("GraphImage")
-              ) {
-                const matches = text.match(/\{"__typename":"[A-Za-z]+",.*?\}/g);
-                if (matches) {
-                  for (const m of matches) {
-                    try {
-                      const parsed = JSON.parse(m);
-                      if (
-                        (parsed.shortcode === s.shortcode ||
-                          parsed.code === s.shortcode) &&
-                        !parsed.placeholder
-                      ) {
-                        console.log(
-                          `[fpdl] Found ${s.shortcode} in deep script scan!`,
-                        );
-                        globalStoriesCache.set(s.shortcode, parsed);
-                        yield* fetchAttachments(parsed);
-                        return;
-                      }
-                    } catch {
-                      /* ignore */
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              /* ignore */
-            }
+          const result = scanScriptText(script.textContent || "");
+          if (result) {
+             if (result.video_url || result.__typename === "Video") {
+               yield result;
+               return;
+             }
+             yield* fetchAttachments(result);
+             return;
           }
+        }
+
+        if (imageFallback) {
+            console.log(`[fpdl] Resolved placeholder ${s.shortcode} from og:image fallback.`);
+            yield imageFallback;
+            return;
         }
 
         throw new Error(
