@@ -40,6 +40,10 @@ const DOC_ID_MODULES = {
     moduleName: "CometVideoRootMediaViewerQuery_facebookRelayOperation",
     fallbackDocId: "25092610667077508",
   },
+  StoriesViewerBucketPrefetcherMultiBucketsQuery: {
+    moduleName: "StoriesViewerBucketPrefetcherMultiBucketsQuery_facebookRelayOperation",
+    fallbackDocId: "9340191609394579",
+  },
 };
 
 /**
@@ -55,7 +59,7 @@ const DEFAULT_VARIABLES = {
     privacySelectorRenderLocation: "COMET_MEDIA_VIEWER",
     renderLocation: "comet_media_viewer",
     shouldShowComments: true,
-    scale: 1,
+    scale: 3,
     useDefaultActor: false,
     __relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider: true,
     __relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider: false,
@@ -72,7 +76,7 @@ const DEFAULT_VARIABLES = {
     isMediaset: true,
     privacySelectorRenderLocation: "COMET_STREAM",
     renderLocation: "permalink",
-    scale: 1,
+    scale: 3,
     useDefaultActor: false,
     __relay_internal__pv__GHLShouldChangeSponsoredDataFieldNamerelayprovider: true,
     __relay_internal__pv__TestPilotShouldIncludeDemoAdUseCaserelayprovider: false,
@@ -81,6 +85,19 @@ const DEFAULT_VARIABLES = {
     __relay_internal__pv__IsWorkUserrelayprovider: false,
     __relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider: false,
     __relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider: false,
+  },
+  StoriesViewerBucketPrefetcherMultiBucketsQuery: {
+    scale: 3,
+    blur: 20,
+    shouldEnableArmadilloStoryReply: true,
+    shouldEnableLiveInStories: true,
+    feedbackSource: 65,
+    useDefaultActor: false,
+    feedLocation: "COMET_MEDIA_VIEWER",
+    focusCommentID: null,
+    shouldDeferLoad: false,
+    isStoriesArchive: false,
+    __relay_internal__pv__IsWorkUserrelayprovider: false,
   },
 };
 

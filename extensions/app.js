@@ -8,6 +8,7 @@ import {
   getStoryPostId,
   getStoryMessage,
   getStoryId,
+  isInstagramStory,
 } from "./story.js";
 import { React, ReactDOM } from "./react.js";
 import { useDownloadButtonInjection } from "./download-button.js";
@@ -52,13 +53,45 @@ function sendAppMessage(message) {
 }
 
 /**
- * Track an event.
- * @param {string} name
- * @param {Record<string, string | number | boolean>} [properties]
+ * Fetch a blob URL and convert it to a Base64 data URL.
+ * @param {string} blobUrl
+ * @returns {Promise<string>}
  */
-function trackEvent(name, properties) {
-  // Tracking disabled
-  // sendAppMessage({ type: "FPDL_TRACK_EVENT", name, properties });
+async function blobToDataUrl(blobUrl) {
+  try {
+    // Some browsers block fetch for blob URLs in certain contexts.
+    // XHR is generally more reliable for blob URLs.
+    const blob = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", blobUrl, true);
+      xhr.responseType = "blob";
+      xhr.onload = () => {
+        if (xhr.status === 200 || xhr.status === 0) resolve(xhr.response);
+        else reject(new Error(`XHR failed: ${xhr.status}`));
+      };
+      xhr.onerror = async () => {
+        // Fallback to fetch if XHR fails
+        try {
+          const res = await fetch(blobUrl);
+          if (res.ok) resolve(await res.blob());
+          else reject(new Error("Fetch fallback failed"));
+        } catch (e) {
+          reject(new Error("XHR and Fetch failed"));
+        }
+      };
+      xhr.send();
+    });
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(/** @type {string} */ (reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    console.warn("[fpdl] blobToDataUrl failed", err);
+    throw err;
+  }
 }
 
 /**
@@ -66,9 +99,155 @@ function trackEvent(name, properties) {
  * @param {Story} story
  */
 async function downloadStory(story) {
+  let yielded = false;
   for await (const { storyId, url, filename } of fetchStoryFiles(story)) {
+    yielded = true;
     await new Promise((r) => setTimeout(r, 200));
     sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url, filename });
+  }
+
+  // Fallback for placeholders if GraphQL yielded nothing
+  if (!yielded && (/** @type {any} */ (story).placeholder)) {
+    console.log("[fpdl] GraphQL failed for placeholder, trying DOM fallback...");
+    const storyId = getStoryId(story);
+    let mediaUrl = null;
+    let ext = "mp4";
+
+    if (isInstagramStory(story)) {
+      const video = document.querySelector("section video");
+      if (video) {
+        // Try finding the real URL in React Fiber props (traversing up)
+        // @ts-ignore
+        const fiberKey = Object.keys(video).find((k) =>
+          k.startsWith("__reactFiber$"),
+        );
+        if (fiberKey) {
+          // @ts-ignore
+          let fiber = video[fiberKey];
+          while (fiber) {
+            const props = fiber.memoizedProps;
+            mediaUrl =
+              props?.videoData?.$1?.playable_url_quality_hd ||
+              props?.videoData?.$1?.browser_native_hd_url ||
+              props?.videoData?.$1?.hd_src ||
+              props?.videoData?.$1?.playable_url ||
+              props?.videoData?.$1?.sd_src ||
+              props?.children?.props?.children?.props?.implementations?.[0]
+                ?.data?.hdSrc ||
+              props?.videoData?.hdSrc ||
+              props?.videoData?.sdSrc ||
+              props?.item?.video_versions?.[0]?.url ||
+              props?.video_versions?.[0]?.url ||
+              props?.item?.image_versions2?.candidates?.[0]?.url ||
+              props?.image_versions2?.candidates?.[0]?.url;
+
+            if (
+              mediaUrl &&
+              typeof mediaUrl === "string" &&
+              !mediaUrl.startsWith("blob:")
+            )
+              break;
+            fiber = fiber.return;
+          }
+        }
+        if (!mediaUrl || mediaUrl.startsWith("blob:")) {
+          mediaUrl = video.querySelector("source")?.src || video.src;
+        }
+      } else {
+        const img = document.querySelector("section img[srcset], section img.x5yr21d");
+        if (img) {
+          if (/** @type {HTMLImageElement} */ (img).srcset) {
+            const sources = /** @type {HTMLImageElement} */ (img).srcset
+              .split(",")
+              .map((s) => {
+                const [url, size] = s.trim().split(" ");
+                return { url, width: parseInt(size) || 0 };
+              });
+            if (sources.length > 0) {
+              mediaUrl = sources.sort((a, b) => b.width - a.width)[0].url;
+            }
+          }
+          if (!mediaUrl) mediaUrl = (/** @type {HTMLImageElement} */ (img)).src;
+          ext = "jpg";
+        }
+      }
+    } else {
+      // Facebook fallback - Similar to Instagram, try Fiber first
+      const video = document.querySelector("video");
+      if (video) {
+        // @ts-ignore
+        const fiberKey = Object.keys(video).find((k) =>
+          k.startsWith("__reactFiber$"),
+        );
+        if (fiberKey) {
+          // @ts-ignore
+          let fiber = video[fiberKey];
+          while (fiber) {
+            const props = fiber.memoizedProps;
+            // Prioritize HD sources
+            mediaUrl =
+              props?.videoData?.$1?.playable_url_quality_hd ||
+              props?.videoData?.$1?.browser_native_hd_url ||
+              props?.videoData?.$1?.hd_src ||
+              props?.videoData?.$1?.playable_url ||
+              props?.videoData?.$1?.sd_src ||
+              props?.children?.props?.children?.props?.implementations?.[0]
+                ?.data?.hdSrc ||
+              props?.implementations?.[0]?.data?.hdSrc ||
+              props?.videoData?.hdSrc ||
+              props?.videoData?.sdSrc;
+
+            if (
+              mediaUrl &&
+              typeof mediaUrl === "string" &&
+              !mediaUrl.startsWith("blob:")
+            )
+              break;
+            fiber = fiber.return;
+          }
+        }
+        if (!mediaUrl || mediaUrl.startsWith("blob:")) {
+          mediaUrl = video.src;
+        }
+      } else {
+        const img = document.querySelector('img[draggable="false"], img.xlpa8m3');
+        if (img && (/** @type {HTMLImageElement} */ (img).offsetHeight > 200 || /** @type {HTMLImageElement} */ (img).offsetWidth > 200)) {
+          // Try to get highest resolution from srcset
+          const srcset = (/** @type {HTMLImageElement} */ (img)).srcset || (/** @type {HTMLElement} */ (img)).getAttribute('srcset');
+          if (srcset) {
+            const sources = srcset.split(',').map(s => {
+              const parts = s.trim().split(' ');
+              const url = parts[0];
+              const size = parts[1];
+              return { url, width: parseInt(size) || 0 };
+            });
+            if (sources.length > 0) {
+              mediaUrl = sources.sort((a, b) => b.width - a.width)[0].url;
+            }
+          }
+          
+          if (!mediaUrl) mediaUrl = (/** @type {HTMLImageElement} */ (img)).src;
+          ext = "jpg";
+        }
+      }
+    }
+
+    if (mediaUrl) {
+      const filename = `story_${storyId}.${ext}`;
+      if (mediaUrl.startsWith('blob:')) {
+        console.log("[fpdl] Found blob URL, converting to DataURL for download...");
+        try {
+          const dataUrl = await blobToDataUrl(mediaUrl);
+          sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: dataUrl, filename });
+        } catch (err) {
+          console.warn("[fpdl] Failed to convert blob to DataURL, download will likely fail", err);
+          // Send it anyway, maybe the background can fetch it (unlikely but worth a shot)
+          sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: mediaUrl, filename });
+        }
+      } else {
+        sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: mediaUrl, filename });
+      }
+    }
   }
 }
 

@@ -31,6 +31,40 @@ const videoUrlCache = new Map();
 /** @type {Map<string, Story>} */
 const globalStoriesCache = new Map();
 
+function isDirectMediaUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  const s = url.toLowerCase();
+
+  // Data and Blod URLs are always direct media for our purposes
+  if (s.startsWith("data:") || s.startsWith("blob:")) return true;
+
+  // Exclude common page-only markers
+  if (
+    s.includes("/posts/") ||
+    s.includes("/stories/") ||
+    s.includes("/videos/") ||
+    s.includes("/reel/")
+  ) {
+    if (!s.includes("fbcdn.net") && !s.includes("cdninstagram.com"))
+      return false;
+  }
+
+  // CDN links are almost always direct media
+  if (
+    s.includes("fbcdn.net") ||
+    s.includes("cdninstagram.com") ||
+    s.includes("fb.me") ||
+    s.includes("fna.fbcdn.net")
+  )
+    return true;
+
+  // Check for common media extensions
+  if (/\.(jpg|jpeg|png|webp|gif|mp4|webm|m4v|mp3|wav)(\?|$)/i.test(s))
+    return true;
+
+  return false;
+}
+
 /**
  * Check if an object is a MediaPhoto.
  * @param {unknown} obj
@@ -38,23 +72,31 @@ const globalStoriesCache = new Map();
  */
 function isMediaPhoto(obj) {
   if (!obj || typeof obj !== "object") return false;
-  const o = /** @type {Record<string, unknown>} */ (obj);
-  if (o.__typename !== "Photo") return false;
-  if (typeof o.id !== "string" || !o.id) return false;
-  return true;
+  const o = /** @type {any} */ (obj);
+  return (
+    o.__typename === "Photo" ||
+    (!!(o.image?.uri && isDirectMediaUrl(o.image.uri)) && !isMediaVideo(obj))
+  );
 }
 
 /**
- * Check if an object is a MediaVideo (has videoDeliveryResponseFragment or video_grid_renderer).
+ * Check if an object is a MediaVideo.
  * @param {unknown} obj
  * @returns {obj is MediaVideo}
  */
 function isMediaVideo(obj) {
   if (!obj || typeof obj !== "object") return false;
-  const o = /** @type {Record<string, unknown>} */ (obj);
-  if (o.__typename !== "Video") return false;
-  // MediaVideo has videoDeliveryResponseFragment or video_grid_renderer
-  return "videoDeliveryResponseFragment" in o || "video_grid_renderer" in o;
+  const o = /** @type {any} */ (obj);
+  if (o.__typename === "Video") return true;
+  return !!(
+    o.playable_url ||
+    o.playable_url_quality_hd ||
+    o.browser_native_hd_url ||
+    o.video_url ||
+    o.videoDeliveryResponseFragment ||
+    o.video_grid_renderer ||
+    o.video_versions
+  );
 }
 
 /**
@@ -69,6 +111,7 @@ function isMediaWatch(obj) {
   // MediaWatch has url but no videoDeliveryResponseFragment or video_grid_renderer
   return (
     typeof o.url === "string" &&
+    o.url.includes("fbcdn.net") &&
     !("videoDeliveryResponseFragment" in o) &&
     !("video_grid_renderer" in o)
   );
@@ -82,72 +125,40 @@ function isMediaWatch(obj) {
 function getDownloadUrl(media) {
   const m = /** @type {any} */ (media);
 
-  // Instagram Post/Reel Video
-  if (m.video_url) {
-    return { url: m.video_url, ext: "mp4" };
-  }
-
-  if (
-    m.video_versions &&
-    Array.isArray(m.video_versions) &&
-    m.video_versions.length > 0
-  ) {
-    const best = m.video_versions.sort(
-      (a, b) => b.width * b.height - a.width * a.height,
-    )[0];
-    return { url: best.url, ext: "mp4" };
-  }
-
-  // Instagram Image
-  if (m.display_url) {
-    const url = m.display_url;
-    let ext = "jpg";
-    if (url.includes(".png") || url.includes("format=png")) ext = "png";
-    return { url, ext };
-  }
-
-  if (
-    m.image_versions2?.candidates &&
-    Array.isArray(m.image_versions2.candidates)
-  ) {
-    const best = m.image_versions2.candidates.sort(
-      (a, b) => b.width * b.height - a.width * a.height,
-    )[0];
-    return { url: best.url, ext: "jpg" };
-  }
-
-  if (isMediaPhoto(media)) {
-    // Pick the best image by comparing dimensions (width * height)
-    /** @type {MediaPhotoUrl | undefined} */
-    let best;
-    for (const img of [media.image, media.viewer_image, media.photo_image]) {
-      if (!img?.uri) continue;
-      const size = img.width * img.height;
-      if (!best || size > best.width * best.height) {
-        best = img;
-      }
-    }
-    if (!best) return undefined;
-
-    const url = best.uri;
-    let ext = "jpg";
-    try {
-      if (/\.png(\?|$)/i.test(url)) ext = "png";
-      else {
-        const u = new URL(url);
-        const fmt = u.searchParams.get("format");
-        if (fmt && /^png$/i.test(fmt)) ext = "png";
-      }
-    } catch {
-      if (/\.png(\?|$)/i.test(url)) ext = "png";
-    }
-    return { url, ext };
-  }
-
+  // 1. Prioritize Video logic
   if (isMediaVideo(media)) {
-    // If it's a direct Video object with playable_url
-    if (media.playable_url) {
-      return { url: media.playable_url, ext: "mp4" };
+    const videoCandidates = [
+      m.playable_url_quality_hd,
+      m.browser_native_hd_url,
+      m.hd_src,
+      m.video_url,
+      m.playable_url,
+      m.sd_src,
+    ];
+
+    for (const url of videoCandidates) {
+      if (
+        url &&
+        typeof url === "string" &&
+        isDirectMediaUrl(url) &&
+        (url.includes(".mp4") ||
+          url.includes("fbcdn.net/v/") ||
+          url.includes("_n.mp4") ||
+          url.includes("?_nc_cat=") ||
+          (url.includes("/video-preview") === false &&
+            url.includes("/video-thumb") === false &&
+            url.includes("/v/t15") === false && // Common thumbnail path
+            url.includes("/v/t45") === false)) // Common thumbnail path
+      ) {
+        // Double check it's not a common image extension
+        const urlWithoutParams = url.split("?")[0].split("#")[0];
+        if (
+          !/\.(jpg|jpeg|png|webp|gif|jfif|bmp)(\?|$)/i.test(urlWithoutParams)
+        ) {
+          console.log(`[fpdl] Picked video URL: ${url.substring(0, 100)}...`);
+          return { url, ext: "mp4" };
+        }
+      }
     }
 
     const list =
@@ -166,11 +177,98 @@ function getDownloadUrl(media) {
       if (first?.progressive_url)
         return { url: first.progressive_url, ext: "mp4" };
     }
-    return undefined;
+
+    if (isMediaWatch(media)) {
+      return { url: media.url, ext: "mp4" };
+    }
+
+    if (
+      m.video_versions &&
+      Array.isArray(m.video_versions) &&
+      m.video_versions.length > 0
+    ) {
+      const best = m.video_versions.sort(
+        (a, b) => b.width * b.height - a.width * a.height,
+      )[0];
+      return { url: best.url, ext: "mp4" };
+    }
   }
 
-  if (isMediaWatch(media)) {
-    return { url: media.url, ext: "mp4" };
+  // 2. Photo logic
+  if (isMediaPhoto(media)) {
+    /** @type {MediaPhotoUrl | undefined} */
+    let best;
+    const candidates = [
+      media.full_screen_image,
+      media.original_image,
+      media.largest_image,
+      media.xlarge_image,
+      media.scaled_image,
+      media.focus_image,
+      media.high_res_image,
+      media.full_image,
+      media.webapp_image,
+      media.viewer_image,
+      media.photo_image,
+      media.image,
+      m.multi_share_media?.image,
+    ];
+
+    for (const img of candidates) {
+      if (!img?.uri) continue;
+      const size = (img.width || 0) * (img.height || 0);
+      const bestSize = (best?.width || 0) * (best?.height || 0);
+
+      if (!best || size > bestSize || (size === bestSize && size > 0)) {
+        best = img;
+      }
+    }
+
+    if (best) {
+      console.log(
+        `[fpdl] Picked photo resolution: ${best.width}x${best.height} from ${best.uri.substring(0, 50)}...`,
+      );
+      const url = best.uri;
+      let ext = "jpg";
+      if (url.includes(".webp") || url.includes("format=webp")) ext = "webp";
+      else if (url.includes(".png") || url.includes("format=png")) ext = "png";
+      return { url, ext };
+    }
+
+    // Instagram fallback
+    if (m.display_url) {
+      const url = m.display_url;
+      let ext = "jpg";
+      if (url.includes(".png") || url.includes("format=png")) ext = "png";
+      return { url, ext };
+    }
+
+    if (
+      m.image_versions2?.candidates &&
+      Array.isArray(m.image_versions2.candidates)
+    ) {
+      const best = m.image_versions2.candidates.sort(
+        (a, b) => b.width * b.height - a.width * a.height,
+      )[0];
+      return { url: best.url, ext: "jpg" };
+    }
+  }
+
+  // 3. Generic fallback - last resort
+  if (m.url && isDirectMediaUrl(m.url)) {
+    const isVideo =
+      m.url.includes(".mp4") ||
+      m.url.includes("fbcdn.net/v/t67") ||
+      m.__typename === "Video";
+    return {
+      url: m.url,
+      ext: isVideo ? "mp4" : "jpg",
+    };
+  }
+
+  // Fallback for any media that has an image property (common in older FB structures)
+  if (media.image?.uri && isDirectMediaUrl(media.image.uri)) {
+    return { url: media.image.uri, ext: "jpg" };
   }
 
   return undefined;
@@ -189,6 +287,9 @@ export function getAttachmentCount(story) {
       return s.edge_sidecar_to_children.edges.length;
     }
     return 1;
+  }
+  if (isUnifiedStory(story)) {
+    return story.attachments?.length ?? 0;
   }
   if (isStoryPost(story)) {
     const attachment = story.attachments[0]?.styles.attachment;
@@ -219,7 +320,7 @@ export function getAttachmentCount(story) {
  * @returns {number}
  */
 export function getDownloadCount(story) {
-  let count = getAttachmentCount(story) + 1; // +1 for index.md
+  let count = getAttachmentCount(story);
   if (isStoryPost(story) && story.attached_story) {
     count += getAttachmentCount(story.attached_story);
   }
@@ -284,220 +385,221 @@ async function fetchMediaNav(currentId, mediasetToken) {
  * @yields {Media}
  */
 async function* fetchAttachments(story) {
-  if (isInstagramStory(story)) {
+  const isInsta = isInstagramStory(story);
+
+  if (isInsta) {
     const s = /** @type {any} */ (story);
 
     // Handle Instagram placeholder (fetch on download)
-    if (s.placeholder && s.shortcode) {
+    if (s.placeholder && (s.shortcode || s.id)) {
       try {
-        // Step 1: Try to extract from page DOM first (existing logic)
-        const articles = document.querySelectorAll("article");
-        for (const article of articles) {
-          const link = article.querySelector(
-            'a[href*="/p/"], a[href*="/reels/"], a[href*="/reel/"]',
-          );
-          if (link) {
-            const href = link.getAttribute("href") || "";
-            const match = href.match(/\/(?:p|reels|reel)\/([A-Za-z0-9_-]+)/);
-            if (match && match[1] === s.shortcode) {
-              const media = [];
-              const imgs = article.querySelectorAll("img");
-              for (const img of imgs) {
-                const src =
-                  img.src ||
-                  img.getAttribute("data-src") ||
-                  img.getAttribute("data-lazy-src") ||
-                  img.currentSrc;
-                if (
-                  src &&
-                  src.includes("cdninstagram.com") &&
-                  !src.includes("profile") &&
-                  !src.includes("s150x150") &&
-                  !src.includes("s320x320") &&
-                  !src.includes("s640x640")
-                ) {
-                  media.push({ __typename: "Photo", display_url: src });
-                }
-              }
-              const videos = article.querySelectorAll("video");
-              for (const video of videos) {
-                const sources = video.querySelectorAll("source");
-                for (const source of sources) {
-                  const src =
-                    source.src ||
-                    source.getAttribute("data-src") ||
-                    source.dataset.src;
-                  if (src && src.includes("cdninstagram.com")) {
-                    media.push({ __typename: "Video", video_url: src });
-                  }
-                }
-                if (!sources.length) {
-                  const src =
-                    video.src ||
-                    video.getAttribute("data-video-src") ||
-                    video.dataset.videoSrc;
-                  if (src && src.includes("cdninstagram.com")) {
-                    media.push({ __typename: "Video", video_url: src });
-                  }
-                }
-              }
-              if (media.length > 0) {
-                for (const m of media) {
-                  yield m;
-                }
-                return;
-              }
-            }
-          }
-        }
+        const storyId = s.shortcode || s.id;
+        console.log(`[fpdl] Resolving Instagram placeholder ${storyId}...`);
 
-        // Helper to solve the "escaped characters" and "nested structure" issue in scripts
-        const scanScriptText = (text) => {
-          if (!text || !text.includes(s.shortcode)) return null;
-          
-          // 1. Precise Unescaping: Handle JSON escaping (\/ and \uXXXX)
-          const unescaped = text.replace(/\\\/|\\u0026|\\u003d/g, (m) => {
-            if (m === "\\\/") return "/";
-            if (m === "\\u0026") return "&";
-            if (m === "\\u003d") return "=";
-            return m;
-          });
-
-          // 2. Proximity-based detection: Find the video URL closest to the shortcode
-          const shortcodeIndex = unescaped.indexOf(s.shortcode);
-          // Look in a generous window around the shortcode (Instagram data is often large)
-          const windowStart = Math.max(0, shortcodeIndex - 2000);
-          const windowEnd = Math.min(unescaped.length, shortcodeIndex + 5000);
-          const context = unescaped.substring(windowStart, windowEnd);
-
-          // Priority 1: .mp4 Video
-          const mp4Match = context.match(/"(?:video_)?url"\s*:\s*"([^"]+?\.mp4[^"]*?)"/);
-          if (mp4Match) {
-              console.log(`[fpdl] Found mp4 URL for ${s.shortcode} in script proximity.`);
-              return { __typename: "Video", video_url: mp4Match[1] };
-          }
-
-          // Priority 2: JSON objects matching shortcode
-          const matches = context.match(/\{"__typename":"[A-Za-z]+",.*?\}(?=\s*[,\]\}]|$)/g);
-          if (matches) {
-            for (const m of matches) {
-              try {
-                const parsed = JSON.parse(m.replace(/\\\/|\\u0026/g, (x) => (x === '\\\/' ? '/' : '&')));
-                if ((parsed.shortcode === s.shortcode || parsed.code === s.shortcode) && !parsed.placeholder) {
-                   return parsed;
-                }
-              } catch (e) { /* ignore */ }
-            }
-          }
-
-          // Priority 3: Any valid image if video was missed
-          const imgMatch = context.match(/"display_url"\s*:\s*"([^"]+?\.jpg[^"]*?)"/);
-          if (imgMatch) {
-              console.log(`[fpdl] Found image fallback for ${s.shortcode} in script proximity.`);
-              return { __typename: "Photo", display_url: imgMatch[1] };
-          }
-
-          return null;
-        };
-
-        // Step 1.5: Scan current document scripts (for popups/feed posts already in memory)
-        console.log(`[fpdl] Searching current document scripts for ${s.shortcode}...`);
-        const localScripts = document.querySelectorAll("script:not([src])");
-        for (const script of localScripts) {
-          const result = scanScriptText(script.textContent || "");
-          if (result) {
-            console.log(`[fpdl] Resolved ${s.shortcode} from local script data.`);
-            if (result.video_url || result.__typename === "Video") {
-              yield result;
-              return;
-            }
-            yield* fetchAttachments(result);
-            return;
-          }
-        }
-
-        // Step 2: Try to find in cache or embedded data first
-        const cached = globalStoriesCache.get(s.shortcode);
-        if (cached && !cached.placeholder) {
-          console.log(
-            `[fpdl] Resolved placeholder ${s.shortcode} from global cache`,
-          );
+        // Step 1: Try to find it in global cache first
+        const cached = globalStoriesCache.get(storyId);
+        if (cached && !(/** @type {any} */ (cached).placeholder)) {
           yield* fetchAttachments(cached);
           return;
         }
 
-        const embedded = extractEmbeddedStories();
-        const found = embedded.find(
-          (story) =>
-            getStoryPostId(story) === s.shortcode && !story.placeholder,
+        // Step 2: Try to extract from page DOM
+        const mediaSources = [];
+        const containers = document.querySelectorAll(
+          "article, section, div[role='dialog'], div[role='presentation']",
         );
-        if (found) {
-          console.log(
-            `[fpdl] Resolved placeholder ${s.shortcode} from embedded data`,
-          );
-          globalStoriesCache.set(s.shortcode, found);
-          yield* fetchAttachments(found);
+        for (const container of containers) {
+          const videos = container.querySelectorAll("video");
+          for (const video of videos) {
+            let src = video.src || video.querySelector("source")?.src;
+            // Try Fiber for real URL if blob
+            if (!src || src.startsWith("blob:")) {
+              // @ts-ignore
+              const fiberKey = Object.keys(video).find((k) =>
+                k.startsWith("__reactFiber$"),
+              );
+              if (fiberKey) {
+                // @ts-ignore
+                let fiber = video[fiberKey];
+                while (fiber) {
+                  const props = fiber.memoizedProps;
+                  const fiberUrl =
+                    props?.videoData?.$1?.playable_url_quality_hd ||
+                    props?.videoData?.$1?.browser_native_hd_url ||
+                    props?.videoData?.$1?.hd_src ||
+                    props?.videoData?.$1?.playable_url ||
+                    props?.videoData?.$1?.sd_src ||
+                    props?.children?.props?.children?.props
+                      ?.implementations?.[0]?.data?.hdSrc ||
+                    props?.videoData?.hdSrc ||
+                    props?.videoData?.sdSrc ||
+                    props?.item?.video_versions?.[0]?.url ||
+                    props?.video_versions?.[0]?.url;
+
+                  if (
+                    fiberUrl &&
+                    typeof fiberUrl === "string" &&
+                    !fiberUrl.startsWith("blob:")
+                  ) {
+                    src = fiberUrl;
+                    break;
+                  }
+                  fiber = fiber.return;
+                }
+              }
+            }
+            if (
+              src &&
+              (src.includes("cdninstagram.com") || src.startsWith("http")) &&
+              !src.startsWith("blob:")
+            ) {
+              mediaSources.push({
+                __typename: "Video",
+                id: storyId,
+                video_url: src,
+              });
+            }
+          }
+
+          const imgs = container.querySelectorAll("img.x5yr21d, img[srcset]");
+          for (const img of imgs) {
+            let src = img.getAttribute("src") || img.currentSrc;
+            if (/** @type {HTMLImageElement} */ (img).srcset) {
+              const sources = /** @type {HTMLImageElement} */ (img).srcset
+                .split(",")
+                .map((s) => {
+                  const [url, size] = s.trim().split(" ");
+                  return { url, width: parseInt(size) || 0 };
+                });
+              if (sources.length > 0)
+                src = sources.sort((a, b) => b.width - a.width)[0].url;
+            }
+            if (
+              src &&
+              src.includes("cdninstagram.com") &&
+              !src.includes("profile") &&
+              !src.startsWith("blob:")
+            ) {
+              mediaSources.push({
+                __typename: "Photo",
+                id: storyId,
+                display_url: src,
+              });
+            }
+          }
+        }
+        if (mediaSources.length > 0) {
+          for (const m of mediaSources) yield m;
           return;
         }
 
-        // Step 3: Fetch the HTML page and parse meta tags
-        const instagramUrl = `https://www.instagram.com/p/${s.shortcode}/`;
-        console.log(
-          `[fpdl] Placeholder ${s.shortcode} not found in cache/embedded. Fetching ${instagramUrl}...`,
-        );
+        // Step 3: Resolve via API using username/id from URL (Only if on Instagram)
+        if (window.location.hostname.includes("instagram.com")) {
+          const parts = window.location.pathname.split("/").filter(Boolean);
+          const isStoryPath = parts[0] === "stories";
+          const isPostPath =
+            parts[0] === "p" || parts[0] === "reel" || parts[0] === "reels";
 
-        const res = await fetch(instagramUrl);
-        if (!res.ok) {
-          throw new Error(`Failed to fetch Instagram page: HTTP ${res.status}`);
-        }
-        const html = await res.text();
+          if (isStoryPath) {
+            const isHighlight = parts[1] === "highlights";
+            const reelId = isHighlight
+              ? parts[2]
+              : /** @type {any} */ (s).reelId || null;
+            const mediaId = storyId !== reelId ? storyId : null;
 
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, "text/html");
+            if (reelId) {
+              try {
+                console.log(
+                  `[fpdl] Fetching highlight/reel API for ${reelId}...`,
+                );
+                const storyItems = await fetchInstagramHighlightData(reelId);
+                if (storyItems.length > 0) {
+                  const match = mediaId
+                    ? storyItems.find(
+                        (item) =>
+                          String(item.id).includes(String(mediaId)) ||
+                          String(item.pk).includes(String(mediaId)) ||
+                          (item.code && String(item.code) === String(mediaId)),
+                      )
+                    : storyItems[0];
 
-        const ogVideoMeta = doc.querySelector('meta[property="og:video"]');
-        const ogImageMeta = doc.querySelector('meta[property="og:image"]');
-
-        if (ogVideoMeta && ogVideoMeta.content) {
-          console.log(
-            `[fpdl] Resolved placeholder ${s.shortcode} from og:video meta tag.`,
-          );
-          yield { __typename: "Video", video_url: ogVideoMeta.content };
-          return;
-        }
-
-        // Store image as fallback but continue searching for video
-        let imageFallback = null;
-        if (ogImageMeta && ogImageMeta.content) {
-          imageFallback = { __typename: "Photo", display_url: ogImageMeta.content };
-        }
-
-        // Fallback: Deep scan script tags in fetched HTML
-        console.log(
-          `[fpdl] No og:video in meta tags for ${s.shortcode}. Performing deep script scan on fetched HTML...`,
-        );
-        const allScripts = doc.querySelectorAll("script:not([src])");
-        for (const script of allScripts) {
-          const result = scanScriptText(script.textContent || "");
-          if (result) {
-             if (result.video_url || result.__typename === "Video") {
-               yield result;
-               return;
-             }
-             yield* fetchAttachments(result);
-             return;
+                  if (match) {
+                    yield match;
+                    return;
+                  }
+                  // If no specific match found but we have items, yield the first as fallback
+                  yield storyItems[0];
+                  return;
+                }
+              } catch (err) {
+                console.warn("[fpdl] Reel API resolution failed", err);
+              }
+            } else if (parts[1] && parts[1] !== "stories") {
+              try {
+                const userId = await resolveInstagramUserId(parts[1]);
+                const storyItems = await fetchInstagramStoryData(userId);
+                const match = storyItems.find(
+                  (item) =>
+                    String(item.id).includes(String(storyId)) ||
+                    String(item.pk).includes(String(storyId)) ||
+                    (item.code && String(item.code) === String(storyId)),
+                );
+                if (match) {
+                  yield match;
+                  return;
+                }
+                if (storyItems.length > 0) {
+                  yield storyItems[0];
+                  return;
+                }
+              } catch (err) {
+                console.warn("[fpdl] Story API resolution failed", err);
+              }
+            }
+          } else if (isPostPath) {
+            try {
+              const mediaInfo = await fetchInstagramMediaInfo(storyId);
+              if (mediaInfo) {
+                yield mediaInfo;
+                return;
+              }
+            } catch (err) {
+              console.warn("[fpdl] Media API resolution failed", err);
+            }
           }
         }
 
-        if (imageFallback) {
-            console.log(`[fpdl] Resolved placeholder ${s.shortcode} from og:image fallback.`);
-            yield imageFallback;
-            return;
+        // Step 4: Fallback to direct page fetch (Only if on Instagram)
+        if (
+          window.location.hostname.includes("instagram.com") &&
+          storyId.length < 15
+        ) {
+          const instagramUrl = `https://www.instagram.com/p/${storyId}/`;
+          const res = await fetch(instagramUrl);
+          if (res.ok) {
+            const html = await res.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, "text/html");
+            const ogVideoMeta = doc.querySelector('meta[property="og:video"]');
+            const ogImageMeta = doc.querySelector('meta[property="og:image"]');
+            if (ogVideoMeta?.content) {
+              yield {
+                __typename: "Video",
+                id: storyId,
+                video_url: ogVideoMeta.content,
+              };
+              return;
+            }
+            if (ogImageMeta?.content) {
+              yield {
+                __typename: "Photo",
+                id: storyId,
+                display_url: ogImageMeta.content,
+              };
+              return;
+            }
+          }
         }
-
-        throw new Error(
-          `Could not find media data for Instagram placeholder ${s.shortcode}`,
-        );
       } catch (err) {
         console.warn("[fpdl] Failed to fetch instagram placeholder", err);
       }
@@ -517,6 +619,55 @@ async function* fetchAttachments(story) {
     return;
   }
 
+  // Handle Facebook Story placeholders
+  const isFB =
+    !isInsta &&
+    (window.location.hostname.includes("facebook.com") ||
+      isUnifiedStory(story) ||
+      story.__typename === "Story");
+  if (isFB && /** @type {any} */ (story).placeholder) {
+    try {
+      console.log(`[fpdl] Fetching Facebook story data for ${story.id}...`);
+
+      // If we're on a story page, we might have the bucket ID in the URL
+      const match = window.location.href.match(/facebook\.com\/stories\/(\d+)/);
+      const bucketID = match ? match[1] : story.id;
+
+      const results = await sendGraphqlRequest({
+        apiName: "StoriesViewerBucketPrefetcherMultiBucketsQuery",
+        variables: { bucketIDs: [bucketID] },
+      });
+
+      const extracted = [];
+      extractStories(results, extracted);
+
+      // Find the story that matches our placeholder ID
+      const matchStory = extracted.find((s) => getStoryId(s) === story.id);
+      if (matchStory) {
+        console.log(
+          `[fpdl] Found matching Facebook story ${story.id} in bucket ${bucketID}.`,
+        );
+        yield* fetchAttachments(matchStory);
+        return;
+      }
+
+      // If no exact match, but we found stories in this bucket, take the first one
+      if (extracted.length > 0) {
+        console.log(
+          `[fpdl] Exact match failed, yielding first story from bucket ${bucketID}.`,
+        );
+        yield* fetchAttachments(extracted[0]);
+        return;
+      }
+    } catch (err) {
+      console.warn(
+        "[fpdl] Failed to fetch Facebook story placeholder data",
+        err,
+      );
+    }
+    return;
+  }
+
   // Handle placeholder stories (Reels where we rely on "fetch on download")
   if (/** @type {any} */ (story).placeholder) {
     try {
@@ -528,7 +679,6 @@ async function* fetchAttachments(story) {
       const extracted = [];
       extractStories(results, extracted);
 
-      // Find the video that matches the placeholder ID
       const match = extracted.find((s) => s.id === story.id);
 
       if (match && match.__typename === "Video") {
@@ -536,8 +686,6 @@ async function* fetchAttachments(story) {
         return;
       }
 
-      // If exact ID match fails, check if we found ANY valid video story in the response
-      // (sometimes the ID in response differs slightly or is the post_id)
       if (extracted.length > 0) {
         const firstVideo = extracted.find((s) => s.__typename === "Video");
         if (firstVideo) {
@@ -551,73 +699,95 @@ async function* fetchAttachments(story) {
     return;
   }
 
-  // Handle bare Video objects (Reels) first, as they don't have attachments array
   if (isStoryVideo(story)) {
     if (story.__typename === "Video") {
-      yield story; // The story object IS the media
+      yield story;
       return;
     }
   }
 
   if (!story.attachments || story.attachments.length === 0) return;
 
-  // For StoryPost, walk through the media set
-  if (isStoryPost(story)) {
+  if (isStoryPost(story) || isUnifiedStory(story)) {
     const totalCount = getAttachmentCount(story);
     let downloadedCount = 0;
-    /** @type {MediaId | undefined} */
-    let currentId;
+    /** @type {any} */
+    let firstMedia = null;
 
-    // First, use media directly from the story attachment
     const attachment = story.attachments[0]?.styles?.attachment;
     if (attachment && "all_subattachments" in attachment) {
-      // Multiple media - use all_subattachments
-      for (const node of attachment.all_subattachments.nodes) {
-        if (node?.media) {
-          yield node.media;
-          downloadedCount++;
-          currentId = node.media;
-        }
-      }
+      firstMedia = attachment.all_subattachments.nodes[0]?.media;
     } else if (attachment && "media" in attachment && attachment.media) {
-      // Single media
-      yield attachment.media;
-      downloadedCount++;
-      currentId = attachment.media;
+      firstMedia = attachment.media;
+    } else if (story.attachments[0]?.media) {
+      firstMedia = story.attachments[0].media;
     } else {
-      // Check for shorts video (fb_shorts_story with attachments)
       const shortsAttachments = /** @type {any} */ (attachment)
         ?.style_infos?.[0]?.fb_shorts_story?.attachments;
       if (Array.isArray(shortsAttachments) && shortsAttachments.length > 0) {
-        for (const shortsNode of shortsAttachments) {
-          if (shortsNode?.media) {
-            yield shortsNode.media;
-            downloadedCount++;
-            currentId = shortsNode.media;
+        firstMedia = shortsAttachments[0]?.media;
+      }
+    }
+
+    // If it's a regular post, we should try to "upgrade" to the viewer version to get max quality.
+    if (firstMedia && isStoryPost(story)) {
+      // For single photo posts, the pcb.POST_ID mediasetToken might not work.
+      // We try with the photo/video ID directly first, then fallback to pcb.
+      const mediasetToken = totalCount > 1 ? `pcb.${story.post_id}` : "";
+      let currentId = firstMedia;
+
+      while (currentId && downloadedCount < totalCount) {
+        try {
+          const nav = await fetchMediaNav(currentId, mediasetToken);
+          if (!nav.currMedia) {
+            // If it's a single photo and Nav failed with empty token, try with pcb token as last resort
+            if (totalCount === 1 && mediasetToken === "") {
+              const retryNav = await fetchMediaNav(
+                currentId,
+                `pcb.${story.post_id}`,
+              );
+              if (retryNav.currMedia) {
+                yield retryNav.currMedia;
+                downloadedCount++;
+                break;
+              }
+            }
+            break;
           }
+
+          yield nav.currMedia;
+          downloadedCount++;
+          currentId = nav.nextId;
+        } catch (err) {
+          console.warn(
+            "[fpdl] Nav fetch failed, falling back to story attachments",
+            err,
+          );
+          break;
         }
       }
     }
 
-    // If we still need more, use media navigation starting from the last downloaded media
-    if (downloadedCount < totalCount && currentId) {
-      const mediasetToken = `pcb.${story.post_id}`;
-
-      // Get the nextId from the last downloaded media
-      let nav = await fetchMediaNav(currentId, mediasetToken);
-      currentId = nav.nextId;
-
-      while (currentId && downloadedCount < totalCount) {
-        nav = await fetchMediaNav(currentId, mediasetToken);
-        if (!nav.currMedia) break;
-        downloadedCount++;
-        yield nav.currMedia;
-        currentId = nav.nextId;
+    // Fallback: Yield original items if Nav didn't finish or wasn't applicable
+    if (downloadedCount < totalCount) {
+      if (attachment && "all_subattachments" in attachment) {
+        for (const node of attachment.all_subattachments.nodes) {
+          if (node?.media && downloadedCount < totalCount) {
+            // Skip if we already yielded via Nav?
+            // For simplicity, we only fall back if we've downloaded 0 so far.
+            if (downloadedCount === 0) yield node.media;
+          }
+        }
+      } else if (firstMedia && downloadedCount === 0) {
+        yield firstMedia;
+      } else if (story.attachments && downloadedCount === 0) {
+        for (const att of story.attachments) {
+          if (att.media) yield att.media;
+        }
       }
     }
   }
 
-  // For StoryWatch, use cached video URL
   if (isStoryWatch(story)) {
     const videoId = story.attachments[0].media.id;
     const videoUrl = videoUrlCache.get(videoId);
@@ -631,6 +801,189 @@ async function* fetchAttachments(story) {
       yield media;
     }
   }
+}
+
+/**
+ * Fetch Instagram story data for a specific user ID.
+ * @param {string} userId
+ * @returns {Promise<any[]>}
+ */
+async function fetchInstagramStoryData(userId) {
+  const url = `https://i.instagram.com/api/v1/feed/user/${userId}/story/`;
+  const res = await fetch(url, {
+    headers: {
+      "x-ig-app-id": "936619743392459",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`Instagram API failed: ${res.status}`);
+  const data = await res.json();
+
+  const results = [];
+  if (data.reel && Array.isArray(data.reel.items)) {
+    for (const item of data.reel.items) {
+      const media = {
+        __typename: item.video_versions ? "Video" : "Photo",
+        id: item.id || item.pk,
+        pk: item.pk,
+        code: item.code,
+        shortcode: item.code,
+        video_url: item.video_versions?.[0]?.url,
+        display_url:
+          item.image_versions2?.candidates?.[0]?.url || item.display_url,
+        taken_at_timestamp: item.taken_at,
+        owner: {
+          id: data.reel?.user?.pk || item.user?.pk,
+          username: data.reel?.user?.username || item.user?.username,
+          full_name: data.reel?.user?.full_name || item.user?.full_name,
+        },
+      };
+      results.push(media);
+    }
+  }
+  return results;
+}
+
+/**
+ * Fetch Instagram highlight data for a specific highlight ID.
+ * @param {string} highlightId
+ * @returns {Promise<any[]>}
+ */
+async function fetchInstagramHighlightData(highlightId) {
+  // Format could be 'highlight:ID' or just 'ID'
+  const id = highlightId.includes(":")
+    ? highlightId
+    : `highlight:${highlightId}`;
+  const url = `https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=${id}`;
+
+  const res = await fetch(url, {
+    headers: {
+      "x-ig-app-id": "936619743392459",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`Instagram Highlight API failed: ${res.status}`);
+  const data = await res.json();
+
+  const results = [];
+  const reel = data.reels?.[id] || Object.values(data.reels || {})[0];
+
+  if (reel && Array.isArray(reel.items)) {
+    for (const item of reel.items) {
+      const media = {
+        __typename: item.video_versions ? "Video" : "Photo",
+        id: item.id || item.pk,
+        pk: item.pk,
+        code: item.code,
+        shortcode: item.code,
+        video_url: item.video_versions?.[0]?.url,
+        display_url:
+          item.image_versions2?.candidates?.[0]?.url || item.display_url,
+        taken_at_timestamp: item.taken_at,
+        owner: {
+          id: reel.user?.pk || item.user?.pk,
+          username: reel.user?.username || item.user?.username,
+          full_name: reel.user?.full_name || item.user?.full_name,
+        },
+      };
+      results.push(media);
+    }
+  }
+  return results;
+}
+
+/**
+ * Fetch Instagram media info for a specific shortcode.
+ * @param {string} shortcode
+ * @returns {Promise<any | undefined>}
+ */
+async function fetchInstagramMediaInfo(shortcode) {
+  // Convert shortcode to numeric ID for the API
+  const mediaId = instagramShortcodeToId(shortcode);
+  const url = `https://i.instagram.com/api/v1/media/${mediaId}/info/`;
+
+  const res = await fetch(url, {
+    headers: {
+      "x-ig-app-id": "936619743392459",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    credentials: "include",
+  });
+  if (!res.ok) {
+    // If numeric ID failed, try with shortcode directly or old __a=1
+    const altUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
+    const altRes = await fetch(altUrl);
+    if (!altRes.ok) return undefined;
+    const data = await altRes.json();
+    const item = data.items?.[0] || data.graphql?.shortcode_media;
+    if (!item) return undefined;
+    return {
+      __typename: item.video_versions || item.is_video ? "Video" : "Photo",
+      id: item.id || item.pk,
+      video_url: item.video_versions?.[0]?.url || item.video_url,
+      display_url:
+        item.image_versions2?.candidates?.[0]?.url || item.display_url,
+      owner: item.owner || item.user,
+    };
+  }
+
+  const data = await res.json();
+  const item = data.items?.[0];
+  if (!item) return undefined;
+
+  return {
+    __typename: item.video_versions ? "Video" : "Photo",
+    id: item.id || item.pk,
+    video_url: item.video_versions?.[0]?.url,
+    display_url: item.image_versions2?.candidates?.[0]?.url || item.display_url,
+    taken_at_timestamp: item.taken_at,
+    owner: {
+      id: item.user.pk,
+      username: item.user.username,
+      full_name: item.user.full_name,
+    },
+  };
+}
+
+/**
+ * Convert an Instagram shortcode to a numeric media ID.
+ * @param {string} shortcode
+ * @returns {string}
+ */
+function instagramShortcodeToId(shortcode) {
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let id = BigInt(0);
+  for (let i = 0; i < shortcode.length; i++) {
+    const char = shortcode[i];
+    const index = alphabet.indexOf(char);
+    if (index === -1) continue;
+    id = id * BigInt(64) + BigInt(index);
+  }
+  return id.toString();
+}
+
+/**
+ * Resolve an Instagram username to a User ID.
+ * @param {string} username
+ * @returns {Promise<string>}
+ */
+async function resolveInstagramUserId(username) {
+  const url = `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
+  const res = await fetch(url, {
+    headers: {
+      "x-ig-app-id": "936619743392459",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`Instagram Profile API failed: ${res.status}`);
+  const json = await res.json();
+  const id = json.data?.user?.id;
+  if (!id) throw new Error("Could not find user ID");
+  return id;
 }
 
 /**
@@ -654,7 +1007,6 @@ function sanitizeFilename(str) {
 function buildFolderName(story) {
   const parts = [];
 
-  // Date part
   const createTime = getCreateTime(story);
   if (createTime) {
     const year = createTime.getFullYear();
@@ -663,21 +1015,18 @@ function buildFolderName(story) {
     parts.push(`${year}-${month}-${day}`);
   }
 
-  // Group name part
   const group = getGroup(story);
   const sanitizedGroup = group ? sanitizeFilename(group.name) : "";
   if (sanitizedGroup) {
     parts.push(sanitizedGroup);
   }
 
-  // Actor name part
   const actor = getStoryActor(story);
   const sanitizedActor = actor ? sanitizeFilename(actor.name) : "";
   if (sanitizedActor) {
     parts.push(sanitizedActor);
   }
 
-  // Post ID part (always included)
   const postId = getStoryPostId(story);
   if (postId) {
     parts.push(sanitizeFilename(postId));
@@ -696,32 +1045,27 @@ function buildFolderName(story) {
 function renderStory(story, attachments, quoted_story) {
   const lines = [];
 
-  // URL
   lines.push(`**URL:** ${getStoryUrl(story)}`);
   lines.push("");
 
-  // Group
   const group = getGroup(story);
   if (group) {
     lines.push(`**Group:** ${group.name}`);
     lines.push("");
   }
 
-  // Actor
   const actor = getStoryActor(story);
   if (actor) {
     lines.push(`**Author:** ${actor.name}`);
     lines.push("");
   }
 
-  // Create time
   const createTime = getCreateTime(story);
   if (createTime) {
     lines.push(`**Date:** ${createTime.toISOString()}`);
     lines.push("");
   }
 
-  // Video title (for StoryVideo/StoryWatch with media title)
   const mediaTitle = getStoryMediaTitle(story);
   if (mediaTitle) {
     lines.push("---");
@@ -730,7 +1074,6 @@ function renderStory(story, attachments, quoted_story) {
     lines.push("");
   }
 
-  // Message
   const message = getStoryMessage(story);
   if (message) {
     lines.push("---");
@@ -739,7 +1082,6 @@ function renderStory(story, attachments, quoted_story) {
     lines.push("");
   }
 
-  // Attachments
   if (attachments.length > 0) {
     lines.push("---");
     lines.push("");
@@ -754,11 +1096,9 @@ function renderStory(story, attachments, quoted_story) {
     lines.push("");
   }
 
-  // Quoted story
   if (quoted_story) {
     lines.push("---");
     lines.push("");
-    // Prefix each line with "> " for blockquote
     const quotedLines = quoted_story.split("\n").map((line) => `> ${line}`);
     lines.push(...quotedLines);
     lines.push("");
@@ -776,8 +1116,6 @@ export async function* fetchStoryFiles(story) {
   const folder = buildFolderName(story);
   const storyId = getStoryId(story);
 
-  /** @type {Array<{ media: Media, filename: string }>} */
-  const downloadedAttachments = [];
   let mediaIndex = 0;
 
   for await (const media of fetchAttachments(story)) {
@@ -788,15 +1126,9 @@ export async function* fetchStoryFiles(story) {
     const indexPrefix = String(mediaIndex).padStart(4, "0");
     const filename = `${folder}/${indexPrefix}_${media.id}.${download.ext}`;
     yield { storyId, url: download.url, filename };
-    downloadedAttachments.push({ media, filename });
   }
 
-  // Fetch attachments for attached_story if it exists
-  /** @type {string | undefined} */
-  let quotedStory;
   if (isStoryPost(story) && story.attached_story) {
-    /** @type {Array<{ media: Media, filename: string }>} */
-    const attachedStoryAttachments = [];
     for await (const media of fetchAttachments(story.attached_story)) {
       const download = getDownloadUrl(media);
       if (!download) continue;
@@ -805,15 +1137,8 @@ export async function* fetchStoryFiles(story) {
       const indexPrefix = String(mediaIndex).padStart(4, "0");
       const filename = `${folder}/${indexPrefix}_${media.id}.${download.ext}`;
       yield { storyId, url: download.url, filename };
-      attachedStoryAttachments.push({ media, filename });
     }
-    quotedStory = renderStory(story.attached_story, attachedStoryAttachments);
   }
-
-  // const indexMarkdown = renderStory(story, downloadedAttachments, quotedStory);
-  // const indexDataUrl =
-  //   "data:text/markdown;charset=utf-8," + encodeURIComponent(indexMarkdown);
-  // yield { storyId, url: indexDataUrl, filename: `${folder}/index.md` };
 }
 
 /**
@@ -822,7 +1147,6 @@ export async function* fetchStoryFiles(story) {
  * @returns {Date | undefined}
  */
 export function getCreateTime(story) {
-  // For InstagramStory
   if (isInstagramStory(story)) {
     const s = /** @type {any} */ (story);
     if (typeof s.taken_at_timestamp === "number") {
@@ -831,7 +1155,13 @@ export function getCreateTime(story) {
     return undefined;
   }
 
-  // For StoryVideo, get publish_time directly from the media
+  if (isUnifiedStory(story)) {
+    if (typeof story.publish_time === "number") {
+      return new Date(story.publish_time * 1000);
+    }
+    return undefined;
+  }
+
   if (isStoryVideo(story)) {
     if (story.__typename === "Video") {
       if (typeof story.publish_time === "number") {
@@ -843,7 +1173,6 @@ export function getCreateTime(story) {
     return new Date(publishTime * 1000);
   }
 
-  // For StoryPost and StoryWatch, use the cache
   if (isStoryPost(story) || isStoryWatch(story)) {
     const createTime = storyCreateTimeCache.get(getStoryId(story));
     if (createTime === undefined) return undefined;
@@ -870,7 +1199,19 @@ export function getGroup(story) {
 export function getStoryUrl(story) {
   if (isInstagramStory(story)) {
     const s = /** @type {any} */ (story);
-    return `https://www.instagram.com/reels/${s.shortcode}/`;
+    if (s.reelId) {
+      return `https://www.instagram.com/stories/highlights/${s.reelId}/`;
+    }
+    if (window.location.href.includes("/stories/")) {
+      const parts = window.location.pathname.split("/").filter(Boolean);
+      return `https://www.instagram.com/stories/${parts[1]}/${s.shortcode || s.id}/`;
+    }
+    return `https://www.instagram.com/reels/${s.shortcode || s.id}/`;
+  }
+  if (isUnifiedStory(story)) {
+    const match = window.location.href.match(/facebook\.com\/stories\/(\d+)/);
+    const bucketID = match ? match[1] : "";
+    return `https://www.facebook.com/stories/${bucketID}/${story.id}/`;
   }
   if (isStoryPost(story)) {
     return story.wwwURL;
@@ -897,6 +1238,9 @@ export function getStoryMessage(story) {
     const s = /** @type {any} */ (story);
     return s.edge_media_to_caption?.edges?.[0]?.node?.text;
   }
+  if (isUnifiedStory(story)) {
+    return story.message?.text;
+  }
   if (isStoryPost(story)) {
     return story.message?.text;
   }
@@ -919,9 +1263,19 @@ export function getStoryMessage(story) {
  * @returns {string}
  */
 export function getStoryPostId(story) {
+  if (!story || typeof story !== "object") return "";
+  const s = /** @type {any} */ (story);
+
+  if (s.placeholder === true && s.id) {
+    return String(s.id);
+  }
+
   if (isInstagramStory(story)) {
     const s = /** @type {any} */ (story);
     return s.shortcode || s.code || s.pk || s.id;
+  }
+  if (isUnifiedStory(story)) {
+    return story.id;
   }
   if (isStoryPost(story)) {
     return story.post_id;
@@ -944,9 +1298,18 @@ export function getStoryPostId(story) {
  * @returns {string}
  */
 export function getStoryId(story) {
+  if (!story || typeof story !== "object") return "";
+  const s = /** @type {any} */ (story);
+
+  if (s.placeholder === true && s.id) {
+    return String(s.id);
+  }
+
   if (isInstagramStory(story)) {
-    const s = /** @type {any} */ (story);
     return s.id || s.pk || s.shortcode || s.code;
+  }
+  if (isUnifiedStory(story)) {
+    return story.id;
   }
   if (isStoryPost(story)) {
     return story.id;
@@ -979,6 +1342,9 @@ export function getStoryActor(story) {
       };
     }
     return undefined;
+  }
+  if (isUnifiedStory(story)) {
+    return story.owner;
   }
   if (isStoryPost(story)) {
     return story.actors?.[0];
@@ -1022,12 +1388,10 @@ export function isStoryPost(obj) {
   if (!obj || typeof obj !== "object") return false;
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Must have id, post_id, and wwwURL
   if (typeof o.id !== "string" || !o.id) return false;
   if (typeof o.post_id !== "string" || !o.post_id) return false;
   if (typeof o.wwwURL !== "string" || !o.wwwURL) return false;
 
-  // Must have attachments array
   if (!Array.isArray(o.attachments)) return false;
 
   return true;
@@ -1042,7 +1406,6 @@ function isStoryVideo(obj) {
   if (!obj || typeof obj !== "object") return false;
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Case 1: Feed Unit style (wrapper with attachments)
   if (Array.isArray(o.attachments) && o.attachments.length > 0) {
     const attachment = /** @type {Record<string, unknown>} */ (
       o.attachments[0]
@@ -1059,13 +1422,8 @@ function isStoryVideo(obj) {
     }
   }
 
-  // Case 2: Direct Video Node (Reels/Watch) or Placeholder
-  // The object itself is the Video media.
   if (o.__typename === "Video" && typeof o.id === "string") {
-    // Placeholder
     if (/** @type {any} */ (o).placeholder) return true;
-
-    // Must have playable url or delivery
     if (typeof o.playable_url === "string") return true;
     if (o.video_grid_renderer || o.videoDeliveryResponseFragment) return true;
   }
@@ -1082,7 +1440,6 @@ function isStoryWatch(obj) {
   if (!obj || typeof obj !== "object") return false;
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Must have attachments array
   if (!Array.isArray(o.attachments)) return false;
   if (o.attachments.length === 0) return false;
 
@@ -1092,7 +1449,6 @@ function isStoryWatch(obj) {
   const media = /** @type {Record<string, unknown>} */ (attachment.media);
   if (media.__typename !== "Video") return false;
 
-  // Must have creation_story with comet_sections
   if (!media.creation_story || typeof media.creation_story !== "object")
     return false;
   const creationStory = /** @type {Record<string, unknown>} */ (
@@ -1114,46 +1470,8 @@ function isStoryWatch(obj) {
  */
 export function isStoryReel(obj) {
   if (!obj || typeof obj !== "object") return false;
-  const o = /** @type {Record<string, unknown>} */ (obj);
-
-  // Must have attachments array
-  if (!Array.isArray(o.attachments)) return false;
-  if (o.attachments.length === 0) return false;
-
-  const attachment = /** @type {Record<string, unknown>} */ (o.attachments[0]);
-  if (!attachment.media || typeof attachment.media !== "object") return false;
-
-  const media = /** @type {Record<string, unknown>} */ (attachment.media);
-  if (media.__typename !== "Video") return false;
-
-  // Reels typically have 'owner' directly on media, or specific 'is_reel' flags,
-  // but importantly they differ from Watch stories in structure.
-  // For now, if it's a Video and not Watch (no creation_story complexity) and not Feed (has attachments array), it's likely a Reel or simple video.
-  // But wait, `isStoryWatch` checks for `creation_story`.
-  // `isStoryVideo` is for `CometFeedUnit` style.
-
-  // The GraphQL responses for Reels (CometVideoRootMediaViewerQuery) often look like { data: { video: { ... } } }
-  // or { data: { node: { ... } } } where node is the video.
-  // We need to match the structure we extract.
-
-  // If we extracted a 'video' node directly from the response and wrapped it into a Story-like structure?
-  // No, `extractStories` works on the raw JSON tree.
-
-  // Let's assume a "Reel" looks like a Video object that has `id`, `playable_url` or `video_grid_renderer`?
-  // Actually, we need to see what `extractStories` finds.
-
-  // If we want to support the user's specific Reel `2196583207753065`, it's a `CometVideoRootMediaViewerQuery`.
-  // The response usually contains a `video` field.
-
-  // Let's broaden the definition:
-  // If an object has `__typename === 'Video'`, acts as its own story?
-  // Current logic expects a wrapper object with `attachments`.
-
   return false;
 }
-
-// We need to inspect the raw data structure for Reels.
-// Since I cannot debug, I will implement a permissive "StoryVideo" check that handles the Reel case.
 
 /**
  * Check if an object is an Instagram media item.
@@ -1164,9 +1482,12 @@ export function isInstagramStory(obj) {
   if (!obj || typeof obj !== "object") return false;
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  if (o.__typename === "InstagramStory" || o.placeholder === true) return true;
+  if (o.__typename === "InstagramStory") return true;
 
-  // Common Instagram GraphQL/API Typenames
+  if (o.placeholder === true) {
+    return window.location.hostname.includes("instagram.com");
+  }
+
   const typenames = new Set([
     "XDTGraphVideo",
     "XDTGraphImage",
@@ -1202,16 +1523,45 @@ export function isInstagramStory(obj) {
 }
 
 /**
+ * Check if an object is a valid Unified Story (Facebook Stories).
+ * @param {unknown} obj
+ * @returns {obj is Story}
+ */
+function isUnifiedStory(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  const o = /** @type {Record<string, unknown>} */ (obj);
+
+  // Recognition for Unified Story placeholders
+  if (
+    o.placeholder === true &&
+    (o.__typename === "Story" ||
+      o.__typename === "UnifiedStory" ||
+      !o.__typename)
+  ) {
+    return true;
+  }
+
+  return (
+    (o.__typename === "Story" || o.__typename === "UnifiedStory") &&
+    typeof o.id === "string" &&
+    Array.isArray(o.attachments)
+  );
+}
+
+/**
  * Check if an object is a valid Story (StoryPost, StoryVideo, or StoryWatch).
  * @param {unknown} obj
  * @returns {obj is Story}
  */
 function isStory(obj) {
+  if (!obj || typeof obj !== "object") return false;
+  if (/** @type {any} */ (obj).placeholder === true) return true;
   return (
     isInstagramStory(obj) ||
     isStoryPost(obj) ||
     isStoryVideo(obj) ||
-    isStoryWatch(obj)
+    isStoryWatch(obj) ||
+    isUnifiedStory(obj)
   );
 }
 
@@ -1227,18 +1577,26 @@ export function extractStories(obj, results = []) {
 
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Check if this object is a valid story
+  if (o.unified_stories && typeof o.unified_stories === "object") {
+    const unified = /** @type {any} */ (o.unified_stories);
+    if (Array.isArray(unified.edges)) {
+      for (const edge of unified.edges) {
+        if (edge?.node) {
+          extractStories(edge.node, results);
+        }
+      }
+    }
+  }
+
   const objIsStory = isStory(obj);
   if (objIsStory) {
     const id = getStoryId(obj);
     if (id) {
-      // Deduplicate in results
       const exists = results.some((s) => getStoryId(s) === id);
       if (!exists) {
         results.push(obj);
       }
 
-      // Populate global cache for placeholder resolution
       const postId = getStoryPostId(obj);
       if (postId && !(/** @type {any} */ (obj).placeholder)) {
         globalStoriesCache.set(postId, obj);
@@ -1246,7 +1604,6 @@ export function extractStories(obj, results = []) {
     }
   }
 
-  // Recurse into arrays and objects
   if (Array.isArray(obj)) {
     for (const item of obj) {
       extractStories(item, results);
@@ -1254,7 +1611,6 @@ export function extractStories(obj, results = []) {
   } else {
     const keys = Object.keys(o);
     for (const key of keys) {
-      // Skip attached_story for story objects - it should remain nested, not extracted separately
       if (objIsStory && key === "attached_story") continue;
       extractStories(o[key], results);
     }
@@ -1273,7 +1629,6 @@ export function extractStoryCreateTime(obj) {
 
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Check if this object has creation_time, id and url (metadata object)
   if (
     typeof o.creation_time === "number" &&
     typeof o.id === "string" &&
@@ -1282,7 +1637,6 @@ export function extractStoryCreateTime(obj) {
     storyCreateTimeCache.set(o.id, o.creation_time);
   }
 
-  // Recurse into arrays and objects
   if (Array.isArray(obj)) {
     for (const item of obj) {
       extractStoryCreateTime(item);
@@ -1304,7 +1658,6 @@ export function extractStoryGroupMap(obj) {
 
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Check if this object has id (string) and to.__typename === "Group"
   if (typeof o.id === "string" && o.to && typeof o.to === "object") {
     const to = /** @type {Record<string, unknown>} */ (o.to);
     if (
@@ -1312,14 +1665,12 @@ export function extractStoryGroupMap(obj) {
       typeof to.id === "string" &&
       typeof to.name === "string"
     ) {
-      // Only set if not already present (prefer first/most complete match)
       if (!storyGroupCache.has(o.id)) {
         storyGroupCache.set(o.id, /** @type {Group} */ (to));
       }
     }
   }
 
-  // Recurse into arrays and objects
   if (Array.isArray(obj)) {
     for (const item of obj) {
       extractStoryGroupMap(item);
@@ -1341,7 +1692,6 @@ export function extractVideoUrls(obj) {
 
   const o = /** @type {Record<string, unknown>} */ (obj);
 
-  // Check if this object has all_video_dash_prefetch_representations
   if (Array.isArray(o.all_video_dash_prefetch_representations)) {
     for (const prefetch of o.all_video_dash_prefetch_representations) {
       if (!prefetch || typeof prefetch !== "object") continue;
@@ -1350,7 +1700,6 @@ export function extractVideoUrls(obj) {
       if (typeof videoId !== "string") continue;
       if (videoUrlCache.has(videoId)) continue;
 
-      // Find the best video representation (highest bandwidth, excluding audio-only)
       const representations = p.representations;
       if (!Array.isArray(representations)) continue;
 
@@ -1363,7 +1712,6 @@ export function extractVideoUrls(obj) {
         const bandwidth = r.bandwidth;
         const mimeType = r.mime_type;
 
-        // Skip audio-only tracks
         if (typeof mimeType === "string" && mimeType.startsWith("audio/"))
           continue;
 
@@ -1380,7 +1728,6 @@ export function extractVideoUrls(obj) {
     }
   }
 
-  // Recurse into arrays and objects
   if (Array.isArray(obj)) {
     for (const item of obj) {
       extractVideoUrls(item);
@@ -1398,7 +1745,6 @@ export function extractVideoUrls(obj) {
  * @returns {Story[]}
  */
 function extractEmbeddedStories() {
-  /** @type {Story[]} */
   const stories = [];
 
   const scripts = document.querySelectorAll('script[type="application/json"]');
@@ -1412,12 +1758,9 @@ function extractEmbeddedStories() {
       extractStoryCreateTime(data);
       extractStoryGroupMap(data);
       extractVideoUrls(data);
-    } catch {
-      // ignore parse errors
-    }
+    } catch {}
   }
 
-  // Instagram specific embedded data
   if (window.location.hostname.includes("instagram.com")) {
     try {
       // @ts-ignore
@@ -1427,12 +1770,9 @@ function extractEmbeddedStories() {
         extractStories(window.__additionalData, stories);
       // @ts-ignore
       if (window.__player_data) extractStories(window.__player_data, stories);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
-  // Populate global cache from found stories
   for (const s of stories) {
     const postId = getStoryPostId(s);
     if (postId && !s.placeholder) {
@@ -1443,10 +1783,6 @@ function extractEmbeddedStories() {
   return stories;
 }
 
-/**
- * Facebook uses different GraphQL operation ("friendly") names depending on context.
- * ...
- */
 const TARGET_API_NAMES = new Set([
   "CometGroupDiscussionRootSuccessQuery",
   "CometModernHomeFeedQuery",
@@ -1464,6 +1800,7 @@ const TARGET_API_NAMES = new Set([
   "SearchCometResultsPaginatedResultsQuery",
   "CometVideoRootMediaViewerQuery",
   "CometPhotoRootContentQuery",
+  "StoriesViewerBucketPrefetcherMultiBucketsQuery",
 ]);
 
 /**
@@ -1471,8 +1808,6 @@ const TARGET_API_NAMES = new Set([
  * @returns {() => void}
  */
 export function storyListener(cb) {
-  // Poll for embedded stories every 1000ms for 30 seconds
-  /** @type {Set<string>} */
   const emittedStoryIds = new Set();
 
   let elapsed = 0;
@@ -1489,9 +1824,7 @@ export function storyListener(cb) {
       emittedStoryIds.add(storyId);
       try {
         cb(story);
-      } catch {
-        // ignore listener errors
-      }
+      } catch {}
     }
 
     if (elapsed >= maxDuration) {
@@ -1499,8 +1832,59 @@ export function storyListener(cb) {
     }
   }, pollInterval);
 
-  // Then listen for new stories from GraphQL responses
-  return graphqlListener((ev) => {
+  const interceptNavigation = () => {
+    if (/** @type {any} */ (window)._fpdl_intercepted) return;
+    /** @type {any} */ (window)._fpdl_intercepted = true;
+
+    const _push = history.pushState;
+    const _replace = history.replaceState;
+
+    history.pushState = function () {
+      const res = _push.apply(this, arguments);
+      window.dispatchEvent(new CustomEvent("fpdl_urlchange"));
+      return res;
+    };
+
+    history.replaceState = function () {
+      const res = _replace.apply(this, arguments);
+      window.dispatchEvent(new CustomEvent("fpdl_urlchange"));
+      return res;
+    };
+
+    window.addEventListener("popstate", () => {
+      window.dispatchEvent(new CustomEvent("fpdl_urlchange"));
+    });
+  };
+  interceptNavigation();
+
+  const handleUrlChange = async () => {
+    const url = window.location.href;
+    if (url.includes("facebook.com/stories/")) {
+      const match = url.match(/facebook\.com\/stories\/(\d+)/);
+      if (match) {
+        const bucketID = match[1];
+        try {
+          const results = await sendGraphqlRequest({
+            apiName: "StoriesViewerBucketPrefetcherMultiBucketsQuery",
+            variables: { bucketIDs: [bucketID] },
+          });
+          const stories = extractStories(results);
+          for (const story of stories) {
+            const storyId = getStoryId(story);
+            if (emittedStoryIds.has(storyId)) continue;
+            emittedStoryIds.add(storyId);
+            cb(story);
+          }
+        } catch (err) {}
+      }
+    }
+  };
+
+  window.addEventListener("fpdl_urlchange", handleUrlChange);
+
+  const urlPollId = setInterval(handleUrlChange, 2000);
+
+  const unlistenGraphql = graphqlListener((ev) => {
     const isInstagram = ev.url.includes("instagram.com");
 
     const apiName =
@@ -1527,7 +1911,6 @@ export function storyListener(cb) {
 
     for (const story of stories) {
       const storyId = getStoryId(story);
-      // Cache all valid stories by their ID/shortcode for placeholder resolution
       const postId = getStoryPostId(story);
       if (postId && !story.placeholder) {
         globalStoriesCache.set(postId, story);
@@ -1537,9 +1920,13 @@ export function storyListener(cb) {
       emittedStoryIds.add(storyId);
       try {
         cb(story);
-      } catch {
-        // ignore listener errors
-      }
+      } catch {}
     }
   });
+
+  return () => {
+    clearInterval(intervalId);
+    clearInterval(urlPollId);
+    unlistenGraphql();
+  };
 }
