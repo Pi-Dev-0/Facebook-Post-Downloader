@@ -468,7 +468,7 @@ async function* fetchAttachments(story) {
                 console.warn("[fpdl] Story API resolution failed", err);
               }
             }
-          } else if (isPostPath) {
+          } else {
             try {
               const mediaInfo = await fetchInstagramMediaInfo(storyId);
               if (mediaInfo) {
