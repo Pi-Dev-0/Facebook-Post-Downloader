@@ -102,7 +102,6 @@ async function downloadStory(story) {
 
   // Fallback for placeholders if GraphQL yielded nothing
   if (!yielded && (/** @type {any} */ (story).placeholder)) {
-    console.log("[fpdl] GraphQL failed for placeholder, trying DOM fallback...");
     const storyId = getStoryId(story);
     let mediaUrl = null;
     let ext = "mp4";
@@ -234,7 +233,6 @@ async function downloadStory(story) {
     if (mediaUrl) {
       const filename = `story_${storyId}.${ext}`;
       if (mediaUrl.startsWith('blob:')) {
-        console.log("[fpdl] Found blob URL, converting to DataURL for download...");
         try {
           const dataUrl = await blobToDataUrl(mediaUrl);
           sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: dataUrl, filename });

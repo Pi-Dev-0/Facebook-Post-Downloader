@@ -123,7 +123,6 @@ function scrapeInstagramMediaFromDOM(storyId) {
  */
 export async function* resolveInstagramPlaceholder(story, globalStoriesCache) {
   const storyId = story.shortcode || story.id;
-  console.log(`[fpdl] Resolving Instagram placeholder ${storyId}...`);
 
   // Step 1: In-memory cache
   const cached = globalStoriesCache.get(storyId);
@@ -145,7 +144,6 @@ export async function* resolveInstagramPlaceholder(story, globalStoriesCache) {
       if (reelId) {
         // Highlights / story reels
         try {
-          console.log(`[fpdl] Fetching highlight API for ${reelId}...`);
           const storyItems = await fetchInstagramHighlightData(reelId);
           if (storyItems.length > 0) {
             // Try to identify which item is currently visible

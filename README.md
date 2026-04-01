@@ -21,6 +21,12 @@
 
 ![Preview](images/preview.png)
 
+### 🎥 Demonstration Video
+
+<video src="images/InstaGram_Downloading_Demon.mp4" controls width="100%">
+  Your browser does not support the video tag.
+</video>
+
 ## ✨ Key Features
 
 - 📸 **Ultra HD Media**: Automatically detects and downloads the highest resolution available for images.
