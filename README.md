@@ -26,6 +26,7 @@
 <video src="https://github.com/Pi-Dev-0/Pi-Post-Saver/blob/main/images/InstaGram_Downloading_Demon.mp4" controls width="100%">
   Your browser does not support the video tag.
 </video>
+![Preview](images/InstaGram_Downloading_Demon.mp4)
 
 ## ✨ Key Features
 
