@@ -23,12 +23,10 @@
 
 ### 🎥 Demonstration Video
 
-<video src="https://github.com/Pi-Dev-0/Pi-Post-Saver/blob/main/images/InstaGram_Downloading_Demon.mp4" controls width="100%">
-  Your browser does not support the video tag.
-</video>
-![Preview](images/InstaGram_Downloading_Demon.mp4)
+https://github.com/user-attachments/assets/46e5139b-99a1-4aaa-adb5-42e59179bbab
 
 ## ✨ Key Features
+
 
 - 📸 **Ultra HD Media**: Automatically detects and downloads the highest resolution available for images.
 - 🎥 **Universal Video Downloader**: Supports Reels, standard video posts, Stories, and IGTV.
