@@ -23,7 +23,7 @@
 
 ### 🎥 Demonstration Video
 
-![Demonstration Video](images/Instagram_Download_Demo.mp4)
+<video src="https://github.com/Pi-Dev-0/Facebook-Post-Downloader/raw/main/images/Instagram_Download_Demo.mp4" width="100%" controls></video>
 
 ## ✨ Key Features
 
