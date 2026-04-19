@@ -427,12 +427,15 @@ async function* fetchAttachments(story) {
 
       // Bucket ID is the first numeric segment in /stories/{bucketID}/{storyID}
       const urlMatch = window.location.href.match(
-        /facebook\.com\/stories\/([^/?#]+)(?:\/([^/?#]+))?/
+        /facebook\.com\/stories\/([^/?#]+)(?:\/([^/?#]+))?/,
       );
       const bucketID = story.bucketId || (urlMatch ? urlMatch[1] : story.id);
-      
-      const isReel = isFacebookReel(story) || window.location.href.includes("/reel/");
-      
+      const urlStoryId =
+        urlMatch && urlMatch[2] ? decodeURIComponent(urlMatch[2]) : null;
+
+      const isReel =
+        isFacebookReel(story) || window.location.href.includes("/reel/");
+
       let results;
       const extracted = [];
 
@@ -531,9 +534,7 @@ async function* fetchAttachments(story) {
 
       // Last resort: if only one story in the bucket, must be the right one
       if (extracted.length === 1) {
-        console.log(
-          `[fpdl] Single story in bucket ${bucketID}, yielding it.`,
-        );
+        console.log(`[fpdl] Single story in bucket ${bucketID}, yielding it.`);
         yield* fetchAttachments(extracted[0]);
         return;
       }
@@ -542,7 +543,9 @@ async function* fetchAttachments(story) {
         console.warn(
           `[fpdl] Story ID match failed for "${story.id}" in bucket ${bucketID} (${extracted.length} stories). Yielding first as fallback.`,
         );
-        console.log(`[fpdl] Available IDs: ${extracted.map(getStoryId).join(", ")}`);
+        console.log(
+          `[fpdl] Available IDs: ${extracted.map(getStoryId).join(", ")}`,
+        );
         yield* fetchAttachments(extracted[0]);
         return;
       }
@@ -1096,7 +1099,9 @@ export function getStoryUrl(story) {
     return `https://www.instagram.com/reels/${s.shortcode || s.id}/`;
   }
   if (isUnifiedStory(story)) {
-    const match = window.location.href.match(/facebook\.com\/stories\/([^/?]+)/);
+    const match = window.location.href.match(
+      /facebook\.com\/stories\/([^/?]+)/,
+    );
     const bucketID = match ? match[1] : "";
     return `https://www.facebook.com/stories/${bucketID}/${story.id}/`;
   }
@@ -1430,10 +1435,10 @@ function isUnifiedStory(obj) {
   if (
     typeof o.id === "string" &&
     Array.isArray(o.attachments) &&
-    (o.__typename === "Story" || 
-     o.__typename === "UnifiedStory" || 
-     o.__typename === "XFBStoryCard" ||
-     "story_type" in o)
+    (o.__typename === "Story" ||
+      o.__typename === "UnifiedStory" ||
+      o.__typename === "XFBStoryCard" ||
+      "story_type" in o)
   ) {
     return true;
   }

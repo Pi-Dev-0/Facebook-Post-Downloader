@@ -1,9 +1,17 @@
 import { storyListener } from "./facebook/facebook.js";
 import { fetchStoryFiles } from "./facebook/story.js";
 import { getAttachmentCount, getDownloadCount } from "./facebook/posts.js";
-import { isStoryPost, getStoryPostId, getStoryMessage, getStoryId, getCreateTime } from "./facebook/story.js";
+import {
+  isStoryPost,
+  getStoryPostId,
+  getStoryMessage,
+  getStoryId,
+  getCreateTime,
+} from "./facebook/story.js";
 import { isInstagramStory } from "./instagram/instagram.js";
 import { isFacebookReel } from "./facebook/reels.js";
+import { facebookFallbackDownload } from "./facebook/app.js";
+import { instagramFallbackDownload } from "./instagram/app.js";
 import { React, ReactDOM } from "./react.js";
 import { useDownloadButtonInjection } from "./download-button.js";
 
@@ -101,148 +109,59 @@ async function downloadStory(story) {
   }
 
   // Fallback for placeholders if GraphQL yielded nothing
-  if (!yielded && (/** @type {any} */ (story).placeholder)) {
+  if (!yielded && /** @type {any} */ (story).placeholder) {
     const storyId = getStoryId(story);
-    let mediaUrl = null;
+    let mediaUrls = [];
     let ext = "mp4";
 
     if (isInstagramStory(story)) {
-      const video = document.querySelector("section video, article video, main video, div[aria-label='Reels Viewer'] video");
-      if (video) {
-        // Try finding the real URL in React Fiber props (traversing up)
-        // @ts-ignore
-        const fiberKey = Object.keys(video).find((k) =>
-          k.startsWith("__reactFiber$"),
-        );
-        if (fiberKey) {
-          // @ts-ignore
-          let fiber = video[fiberKey];
-          while (fiber) {
-            const props = fiber.memoizedProps;
-            mediaUrl =
-              props?.videoData?.$1?.playable_url_quality_hd ||
-              props?.videoData?.$1?.browser_native_hd_url ||
-              props?.videoData?.$1?.hd_src ||
-              props?.videoData?.$1?.playable_url ||
-              props?.videoData?.$1?.sd_src ||
-              props?.children?.props?.children?.props?.implementations?.[0]
-                ?.data?.hdSrc ||
-              props?.videoData?.hdSrc ||
-              props?.videoData?.sdSrc ||
-              props?.item?.video_versions?.[0]?.url ||
-              props?.video_versions?.[0]?.url ||
-              props?.item?.image_versions2?.candidates?.[0]?.url ||
-              props?.image_versions2?.candidates?.[0]?.url;
-
-            if (
-              mediaUrl &&
-              typeof mediaUrl === "string" &&
-              !mediaUrl.startsWith("blob:")
-            )
-              break;
-            fiber = fiber.return;
-          }
-        }
-        if (!mediaUrl || mediaUrl.startsWith("blob:")) {
-          mediaUrl = video.querySelector("source")?.src || video.src;
-        }
-      } else {
-        const img = document.querySelector("section img[srcset], section img.x5yr21d");
-        if (img) {
-          if (/** @type {HTMLImageElement} */ (img).srcset) {
-            const sources = /** @type {HTMLImageElement} */ (img).srcset
-              .split(",")
-              .map((s) => {
-                const [url, size] = s.trim().split(" ");
-                return { url, width: parseInt(size) || 0 };
-              });
-            if (sources.length > 0) {
-              mediaUrl = sources.sort((a, b) => b.width - a.width)[0].url;
-            }
-          }
-          if (!mediaUrl) mediaUrl = (/** @type {HTMLImageElement} */ (img)).src;
-          ext = "jpg";
-        }
-      }
+      const res = instagramFallbackDownload(story);
+      if (res.mediaUrl) mediaUrls = [res.mediaUrl];
+      ext = res.ext;
     } else {
-      // Facebook fallback - Similar to Instagram, try Fiber first
-      const isReel = isFacebookReel(story) || window.location.href.includes("/reel/");
-      const videoSelector = isReel ? 'div[role="main"] video, .x1useyqa video, .xpdmqnj video' : 'video';
-      const video = document.querySelector(videoSelector) || document.querySelector('video');
-
-      if (video) {
-        // @ts-ignore
-        const fiberKey = Object.keys(video).find((k) =>
-          k.startsWith("__reactFiber$"),
-        );
-        if (fiberKey) {
-          // @ts-ignore
-          let fiber = video[fiberKey];
-          while (fiber) {
-            const props = fiber.memoizedProps;
-            // Prioritize HD sources
-            mediaUrl =
-              props?.videoData?.$1?.playable_url_quality_hd ||
-              props?.videoData?.$1?.browser_native_hd_url ||
-              props?.videoData?.$1?.hd_src ||
-              props?.videoData?.$1?.playable_url ||
-              props?.videoData?.$1?.sd_src ||
-              props?.children?.props?.children?.props?.implementations?.[0]
-                ?.data?.hdSrc ||
-              props?.implementations?.[0]?.data?.hdSrc ||
-              props?.videoData?.hdSrc ||
-              props?.videoData?.sdSrc ||
-              props?.item?.video_versions?.[0]?.url ||
-              props?.video_versions?.[0]?.url;
-
-            if (
-              mediaUrl &&
-              typeof mediaUrl === "string" &&
-              !mediaUrl.startsWith("blob:")
-            )
-              break;
-            fiber = fiber.return;
-          }
-        }
-        if (!mediaUrl || mediaUrl.startsWith("blob:")) {
-          mediaUrl = video.src;
-        }
-      } else {
-        const img = document.querySelector('img[draggable="false"], img.xlpa8m3');
-        if (img && (/** @type {HTMLImageElement} */ (img).offsetHeight > 200 || /** @type {HTMLImageElement} */ (img).offsetWidth > 200)) {
-          // Try to get highest resolution from srcset
-          const srcset = (/** @type {HTMLImageElement} */ (img)).srcset || (/** @type {HTMLElement} */ (img)).getAttribute('srcset');
-          if (srcset) {
-            const sources = srcset.split(',').map(s => {
-              const parts = s.trim().split(' ');
-              const url = parts[0];
-              const size = parts[1];
-              return { url, width: parseInt(size) || 0 };
-            });
-            if (sources.length > 0) {
-              mediaUrl = sources.sort((a, b) => b.width - a.width)[0].url;
-            }
-          }
-          
-          if (!mediaUrl) mediaUrl = (/** @type {HTMLImageElement} */ (img)).src;
-          ext = "jpg";
-        }
-      }
+      const res = facebookFallbackDownload(story);
+      if (res.mediaUrls) mediaUrls = res.mediaUrls;
+      else if (res.mediaUrl) mediaUrls = [res.mediaUrl];
+      ext = res.ext;
     }
 
-    if (mediaUrl) {
-      const filename = `story_${storyId}.${ext}`;
-      if (mediaUrl.startsWith('blob:')) {
-        try {
-          const dataUrl = await blobToDataUrl(mediaUrl);
-          sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: dataUrl, filename });
-        } catch (err) {
-          console.warn("[fpdl] Failed to convert blob to DataURL, download will likely fail", err);
-          // Send it anyway, maybe the background can fetch it (unlikely but worth a shot)
-          sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: mediaUrl, filename });
+    if (mediaUrls.length > 0) {
+      for (let i = 0; i < mediaUrls.length; i++) {
+        const urlToDownload = mediaUrls[i];
+        // Add index suffix if multiple
+        const suffix = mediaUrls.length > 1 ? `_${i + 1}` : "";
+        const filename = `story_${storyId}${suffix}.${ext}`;
+
+        if (urlToDownload.startsWith("blob:")) {
+          try {
+            const dataUrl = await blobToDataUrl(urlToDownload);
+            sendAppMessage({
+              type: "FPDL_DOWNLOAD",
+              storyId,
+              url: dataUrl,
+              filename,
+            });
+          } catch (err) {
+            console.warn(
+              "[fpdl] Failed to convert blob to DataURL, download will likely fail",
+              err,
+            );
+            // Send it anyway, maybe the background can fetch it (unlikely but worth a shot)
+            sendAppMessage({
+              type: "FPDL_DOWNLOAD",
+              storyId,
+              url: urlToDownload,
+              filename,
+            });
+          }
+        } else {
+          sendAppMessage({
+            type: "FPDL_DOWNLOAD",
+            storyId,
+            url: urlToDownload,
+            filename,
+          });
         }
-      } else {
-        sendAppMessage({ type: "FPDL_DOWNLOAD", storyId, url: mediaUrl, filename });
       }
     }
   }

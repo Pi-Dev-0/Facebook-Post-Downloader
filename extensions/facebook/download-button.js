@@ -29,8 +29,31 @@ export function injectPostFeedButtons(stories, downloadStory) {
     if (!buttonRow) continue;
     if (buttonRow.querySelector(".fpdl-download-btn")) continue;
 
-    const story = findStoryForButton(actionBtn, stories);
-    if (!story) continue;
+    let story = findStoryForButton(actionBtn, stories);
+    
+    if (!story) {
+      // If we couldn't find the story in the cache, try a broader search for the ID
+      // Facebook sometimes moves the props up the tree
+      const getFiberId = (el) => 
+        getValueFromReactFiber(el, (p) => 
+          p?.story?.id || p?.storyPostID || p?.post_id || p?.videoID || p?.video_id
+        ) || getValueFromReactFiber(el, (p) => p?.story?.permalink_url);
+      
+      let effectiveId = getFiberId(actionBtn) || 
+                        getFiberId(actionBtn.parentElement) || 
+                        getFiberId(overflowWrapper) || 
+                        getFiberId(buttonRow);
+      
+      // Always inject the button. If we don't have an ID, use a placeholder so 
+      // the fallback DOM extraction in app.js can at least try to download the media.
+      story = {
+        id: typeof effectiveId === 'string' && effectiveId.startsWith('http') ? 'unknown' : (effectiveId || "unknown"),
+        url: typeof effectiveId === 'string' && effectiveId.startsWith('http') ? effectiveId : undefined,
+        __typename: "Story",
+        placeholder: true,
+        _node: actionBtn,
+      };
+    }
 
     const downloadBtn = createDownloadButton(story, downloadStory);
     downloadBtn.classList.add("fpdl-download-btn--facebook-feed");
