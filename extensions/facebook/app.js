@@ -65,22 +65,44 @@ export function facebookFallbackDownload(story) {
     if (fiberKey) {
       // @ts-ignore
       let fiber = video[fiberKey];
-      while (fiber) {
+      let depth = 0;
+      while (fiber && depth < 50) {
         const props = fiber.memoizedProps;
-        // Prioritize HD sources
-        let foundMediaUrl =
-          props?.videoData?.$1?.playable_url_quality_hd ||
-          props?.videoData?.$1?.browser_native_hd_url ||
-          props?.videoData?.$1?.hd_src ||
-          props?.videoData?.$1?.playable_url ||
-          props?.videoData?.$1?.sd_src ||
-          props?.children?.props?.children?.props?.implementations?.[0]?.data
-            ?.hdSrc ||
-          props?.implementations?.[0]?.data?.hdSrc ||
-          props?.videoData?.hdSrc ||
-          props?.videoData?.sdSrc ||
-          props?.item?.video_versions?.[0]?.url ||
-          props?.video_versions?.[0]?.url;
+        
+        // Recursively search for the video URL in the fiber props
+        const findVideoUrl = (obj, level = 0) => {
+          if (!obj || level > 15 || typeof obj !== 'object') return null;
+          
+          // Fast path direct checks
+          if (typeof obj.playable_url_quality_hd === 'string') return obj.playable_url_quality_hd;
+          if (typeof obj.browser_native_hd_url === 'string') return obj.browser_native_hd_url;
+          if (typeof obj.hd_src === 'string') return obj.hd_src;
+          if (typeof obj.playable_url === 'string') return obj.playable_url;
+          if (typeof obj.sd_src === 'string') return obj.sd_src;
+          if (typeof obj.hdSrc === 'string') return obj.hdSrc;
+          if (typeof obj.sdSrc === 'string') return obj.sdSrc;
+          if (typeof obj.video_url === 'string') return obj.video_url;
+          if (typeof obj.url === 'string' && obj.__typename === 'Video') return obj.url;
+          
+          // Special array cases
+          if (Array.isArray(obj.video_versions) && obj.video_versions[0]?.url) return obj.video_versions[0].url;
+          if (Array.isArray(obj.progressive_urls) && obj.progressive_urls[0]?.progressive_url) {
+            // Find HD if available
+            const hd = obj.progressive_urls.find(x => x?.metadata?.quality === "HD" && x?.progressive_url);
+            return hd ? hd.progressive_url : obj.progressive_urls[0].progressive_url;
+          }
+
+          for (const key of Object.keys(obj)) {
+            // Skip React internals and DOM nodes to avoid cycles and huge trees
+            if (key === 'children' || key === '_owner' || key.startsWith('__')) continue;
+            
+            const res = findVideoUrl(obj[key], level + 1);
+            if (res) return res;
+          }
+          return null;
+        };
+
+        let foundMediaUrl = findVideoUrl(props);
 
         if (
           foundMediaUrl &&
@@ -91,6 +113,7 @@ export function facebookFallbackDownload(story) {
           break;
         }
         fiber = fiber.return;
+        depth++;
       }
     }
     if (mediaUrls.length === 0) {

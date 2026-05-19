@@ -178,7 +178,6 @@ export function injectReelsButtons(stories, downloadStory) {
     // We use .parentElement.closest() because Facebook action buttons sometimes 
     // share the same generic classes (like .x1useyqa) with the outer containers!
     const reelRoot = anchorBtn.parentElement?.closest('.x1useyqa, .xpdmqnj, .x1yztbdb, div[aria-label="Reels Viewer"]') || container;
-    if (reelRoot.querySelector(".fpdl-download-btn-reel")) continue;
 
     // Find the actual column holding the action buttons
     const actionWrapper = anchorBtn.closest('[role="button"]') || anchorBtn;
@@ -186,33 +185,29 @@ export function injectReelsButtons(stories, downloadStory) {
     
     if (!actionColumn) continue;
 
-    // Failsafe against infinite injection loops
-    if (actionColumn.querySelector(".fpdl-download-btn-reel")) continue;
-
-    // Try multiple ways to get the ID from React Fiber
+    // We get extractedId early so we can compare it against existing buttons in the reelRoot
     let extractedId =
       getValueFromReactFiber(
         anchorBtn,
-        (p) => p?.feedback?.associated_group_video?.id,
-        50,
-      ) ||
-      getValueFromReactFiber(
-        anchorBtn,
-        (p) =>
-          p?.feedback?.video_view_count_renderer?.feedback
-            ?.associated_group_video?.id,
-        50,
-      ) ||
-      getValueFromReactFiber(
-        anchorBtn,
-        (p) => p?.videoID || p?.storyPostID || p?.upvoteInput?.storyID,
-        50,
-      ) ||
-      getValueFromReactFiber(
-        anchorBtn,
-        (p) => p?.feedback?.associated_video?.id,
+        (p) => 
+          p?.feedback?.associated_group_video?.id ||
+          p?.feedback?.video_view_count_renderer?.feedback?.associated_group_video?.id ||
+          p?.videoID || p?.storyPostID || p?.upvoteInput?.storyID ||
+          p?.feedback?.associated_video?.id ||
+          p?.video?.id || p?.saved_media?.id || p?.post_id || p?.id,
         50,
       );
+
+    if (!extractedId) {
+      const videoNode = reelRoot.querySelector("video");
+      if (videoNode) {
+        extractedId = getValueFromReactFiber(
+          videoNode,
+          (p) => p?.videoID || p?.video_id || p?.videoData?.$1?.video_id || p?.video?.id,
+          50,
+        );
+      }
+    }
 
     let effectiveId = extractedId;
     if (!effectiveId && (isReelPage || isActiveReel(container))) {
@@ -220,6 +215,21 @@ export function injectReelsButtons(stories, downloadStory) {
     }
 
     if (!effectiveId) continue;
+
+    // Prevent multiple buttons per reel (due to nested containers matching potentialContainers)
+    // AND Support virtualized lists (by removing stale buttons when ID changes)
+    const existingInRoot = reelRoot.querySelectorAll(".fpdl-download-btn-reel");
+    let isFresh = false;
+    for (const btn of existingInRoot) {
+      if (btn.getAttribute("data-video-id") === effectiveId) {
+        isFresh = true;
+      } else {
+        btn.remove();
+      }
+    }
+    if (isFresh) continue;
+
+    // (Removed duplicate existingBtn checks, handled above via existingInRoot)
 
     let story = stories.find(
       (s) => getStoryId(s) === effectiveId || getStoryPostId(s) === effectiveId,
@@ -239,6 +249,9 @@ export function injectReelsButtons(stories, downloadStory) {
         placeholder: true,
       };
     }
+    
+    // Clone story to avoid polluting cache and set _node for DOM fallback
+    story = { ...story, _node: anchorBtn };
 
     const downloadBtn = createDownloadButton(story, downloadStory);
     downloadBtn.classList.add("fpdl-download-btn--reel");
@@ -246,6 +259,7 @@ export function injectReelsButtons(stories, downloadStory) {
 
     const wrapper = document.createElement("div");
     wrapper.className = "fpdl-download-btn-reel-wrapper";
+    wrapper.setAttribute("data-video-id", effectiveId);
 
     if (actionColumn.firstElementChild) {
       wrapper.className = `${actionColumn.firstElementChild.className} fpdl-download-btn-reel`;
