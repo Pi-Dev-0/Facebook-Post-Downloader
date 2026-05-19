@@ -19,7 +19,7 @@ import {
  */
 export function injectPostFeedButtons(stories, downloadStory) {
   const actionButtons = document.querySelectorAll(
-    '[aria-label="Actions for this post"]',
+    '[aria-label^="Actions for this post"]',
   );
 
   for (const actionBtn of actionButtons) {
